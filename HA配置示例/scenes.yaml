@@ -1,0 +1,150 @@
+# ============================================================
+# 面板场景页 9 个场景 —— scenes.yaml
+# 用法: 在 HA 的 configuration.yaml 里加一行:
+#   scene: !include scenes.yaml
+# 然后 开发者工具 -> YAML -> 重新加载场景 (或重启 HA)
+#
+# id 固定为面板按钮调用的 entity_id, 不要改:
+#   scene.home_arrive / scene.home_leave / scene.sleep
+#   scene.movie / scene.game / scene.fresh_air
+#   scene.arm_on / scene.arm_off / scene.all_off
+#
+# 只收录当前在线、已确认的设备; 亮度百分比/色温K/窗帘位置都可自行改。
+# 窗帘 position: 100=全开, 0=全关 (DT98 旧版服务, 与面板一致)
+# ============================================================
+
+# 1) 回家: 主灯亮、拉开窗帘
+- id: home_arrive
+  name: 回家
+  entities:
+    light.yeelink_cn_<你的设备>_ceil40_s_2_light:
+      state: "on"
+      brightness_pct: 80
+      color_temp_kelvin: 4000
+    light.giot_cn_1005236557_v5ssm_s_2_light:
+      state: "on"
+      brightness_pct: 70
+      color_temp_kelvin: 4000
+    cover.dooya_cn_<你的设备>_dt98_s_2_curtain:
+      state: "open"
+      position: 100
+    switch.xiaomi_cn_<你的设备>_04_on_p_2_1:
+      state: "off"
+
+# 2) 离家: 全关灯、关窗帘、关氛围插座、开室外移动侦测
+- id: home_leave
+  name: 离家
+  entities:
+    light.yeelink_cn_<你的设备>_ceil40_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_ceil30_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_colorb_s_2:
+      state: "off"
+    light.lemesh_cn_<你的设备>_wy0c14_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_mbulb3_s_2:
+      state: "off"
+    light.giot_cn_1005236557_v5ssm_s_2_light:
+      state: "off"
+    cover.dooya_cn_<你的设备>_dt98_s_2_curtain:
+      state: "closed"
+      position: 0
+    switch.xiaomi_cn_<你的设备>_04_on_p_2_1:
+      state: "off"
+    switch.isa_cn_1192453041_cw501d_motion_detection_p_5_1:
+      state: "on"
+
+# 3) 睡眠: 全关灯、关窗帘
+- id: sleep
+  name: 睡眠
+  entities:
+    light.yeelink_cn_<你的设备>_ceil40_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_ceil30_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_colorb_s_2:
+      state: "off"
+    light.lemesh_cn_<你的设备>_wy0c14_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_mbulb3_s_2:
+      state: "off"
+    light.giot_cn_1005236557_v5ssm_s_2_light:
+      state: "off"
+    cover.dooya_cn_<你的设备>_dt98_s_2_curtain:
+      state: "closed"
+      position: 0
+
+# 4) 观影: 主灯全灭, 只留彩虹台灯低亮暖光, 关窗帘
+- id: movie
+  name: 观影
+  entities:
+    light.yeelink_cn_<你的设备>_ceil40_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_ceil30_s_2_light:
+      state: "off"
+    light.giot_cn_1005236557_v5ssm_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_colorb_s_2:
+      state: "on"
+      brightness_pct: 25
+      color_temp_kelvin: 2700
+    cover.dooya_cn_<你的设备>_dt98_s_2_curtain:
+      state: "closed"
+      position: 0
+
+# 5) 游戏: 主灯中亮 + 彩虹台灯, 关窗帘
+- id: game
+  name: 游戏
+  entities:
+    light.yeelink_cn_<你的设备>_ceil40_s_2_light:
+      state: "on"
+      brightness_pct: 60
+      color_temp_kelvin: 4500
+    light.yeelink_cn_<你的设备>_colorb_s_2:
+      state: "on"
+      brightness_pct: 50
+    cover.dooya_cn_<你的设备>_dt98_s_2_curtain:
+      state: "closed"
+      position: 0
+
+# 6) 通风: 拉开窗帘 (落地扇/净化器要加就补在这里)
+- id: fresh_air
+  name: 通风
+  entities:
+    cover.dooya_cn_<你的设备>_dt98_s_2_curtain:
+      state: "open"
+      position: 100
+
+# 7) 布防: 开室外双摄移动侦测 (声光由侦测触发, 这里不强制开)
+- id: arm_on
+  name: 布防
+  entities:
+    switch.isa_cn_1192453041_cw501d_motion_detection_p_5_1:
+      state: "on"
+
+# 8) 撤防: 关室外双摄移动侦测
+- id: arm_off
+  name: 撤防
+  entities:
+    switch.isa_cn_1192453041_cw501d_motion_detection_p_5_1:
+      state: "off"
+
+# 9) 全关: 全部熄灯、关氛围插座 (不动窗帘)
+- id: all_off
+  name: 全关
+  entities:
+    light.yeelink_cn_<你的设备>_ceil40_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_ceil30_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_colorb_s_2:
+      state: "off"
+    light.lemesh_cn_<你的设备>_wy0c14_s_2_light:
+      state: "off"
+    light.yeelink_cn_<你的设备>_mbulb3_s_2:
+      state: "off"
+    light.giot_cn_1005236557_v5ssm_s_2_light:
+      state: "off"
+    switch.xiaomi_cn_<你的设备>_04_on_p_2_1:
+      state: "off"

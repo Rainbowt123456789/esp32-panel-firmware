@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32-4848S040 硬件配置表</title>
+<style>
+  body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#f3f5f8;color:#22303c;margin:0;padding:20px;}
+  .wrap{max-width:980px;margin:0 auto;}
+  h1{font-size:22px;text-align:center;margin:6px 0 2px;}
+  .sub{text-align:center;color:#8a97a5;font-size:13px;margin-bottom:18px;}
+  h2{font-size:16px;margin:22px 0 8px;padding-left:8px;border-left:4px solid #0f9d8f;}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px;overflow:hidden;font-size:13.5px;box-shadow:0 1px 4px rgba(0,0,0,.06);}
+  th,td{border:1px solid #e3e8ee;padding:8px 10px;text-align:left;vertical-align:top;}
+  th{background:#eef3fb;color:#2c4a78;font-weight:700;white-space:nowrap;}
+  td.gpio{font-family:Consolas,monospace;color:#1d4ed8;font-weight:700;white-space:nowrap;}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11.5px;}
+  .used{background:#e6f4f1;color:#0a7d72;}
+  .opt{background:#fff8e8;color:#8a5a12;}
+  .na{background:#f0f2f4;color:#8a97a5;}
+  .spec{display:flex;flex-wrap:wrap;gap:10px;}
+  .spec div{flex:1 1 160px;background:#fff;border:1px solid #e3e8ee;border-radius:10px;padding:10px 12px;font-size:13.5px;}
+  .spec b{display:block;font-size:12px;color:#8a97a5;font-weight:600;margin-bottom:2px;}
+  .warn{background:#fff1f0;border:1px solid #ffccc7;color:#a8071a;border-radius:10px;padding:12px 14px;font-size:13.5px;margin-top:18px;}
+  .note{font-size:12.5px;color:#8a97a5;margin-top:8px;line-height:1.7;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GUITION ESP32-S3-4848S040 硬件配置表</h1>
+  <div class="sub">4.0" 480×480 IPS 触屏面板 · ESPHome 实测引脚 · 整理自固件与公开资料，未公开项已标注</div>
+
+  <h2>一、核心规格</h2>
+  <div class="spec">
+    <div><b>主控</b>ESP32-S3 双核 240MHz，WiFi + BLE</div>
+    <div><b>Flash</b>16MB（QIO）</div>
+    <div><b>PSRAM</b>8MB（OPI/Octal 80MHz）</div>
+    <div><b>屏幕</b>ST7701，480×480，RGB 并口 16bit</div>
+    <div><b>触摸</b>GT911 电容屏，I2C 地址 0x5D</div>
+    <div><b>继电器</b>后板 1~3 路（版本不同）</div>
+  </div>
+
+  <h2>二、板上插座 / 物理接口</h2>
+  <table>
+    <tr><th style="width:150px;">插座 / 接口</th><th>位置与用途</th><th style="width:150px;">状态</th></tr>
+    <tr><td>USB-C 口</td><td>板载 CH340/CH350 USB 转串口，用于首次烧录和供电；非 ESP32 原生 USB</td><td><span class="tag used">已用</span></td></tr>
+    <tr><td>Micro SD 卡槽</td><td>USB 口上方，SPI 方式（CS=42 / MOSI=47 / CLK=48 / MISO=41）</td><td><span class="tag opt">板载·本固件未启用</span></td></tr>
+    <tr><td>锂电池连接器</td><td>预留 LIPO 电池座，充电管理疑似 IP5306；<b>具体引脚定义官方未公开，需拆机核对</b></td><td><span class="tag na">定义未公开</span></td></tr>
+    <tr><td>喇叭座</td><td>预留 I2S 功放（疑似 NS4168）；<b>与继电器脚通过 0Ω 电阻二选一，引脚未公开</b></td><td><span class="tag na">定义未公开</span></td></tr>
+    <tr><td>串口接口</td><td>板载调试/串口座，面板合盖后不可用</td><td><span class="tag na">本固件未用</span></td></tr>
+    <tr><td>8-pin 连接器</td><td>前板（ESP32 主控）与后板（电源 + 继电器）之间的连接排线座</td><td><span class="tag used">板内连接</span></td></tr>
+    <tr><td>后板继电器端子</td><td>1~3 路继电器接线端子，<b>接市电强电，带电禁止操作</b></td><td><span class="tag used">见下表</span></td></tr>
+    <tr><td>SW1 隐藏按键</td><td>USB 旁的微动按键，连接关系官方未公开</td><td><span class="tag na">定义未公开</span></td></tr>
+  </table>
+
+  <h2>三、GPIO 引脚分配（本固件已用）</h2>
+  <table>
+    <tr><th style="width:120px;">功能模块</th><th style="width:200px;">信号</th><th>GPIO</th><th>备注</th></tr>
+    <tr><td>背光</td><td>BL（LEDC PWM 调光）</td><td class="gpio">GPIO38</td><td>亮度可调</td></tr>
+    <tr><td rowspan="3">屏 SPI（命令）</td><td>CS 片选</td><td class="gpio">GPIO39</td><td rowspan="3">9-bit SPI 仅发送命令/初始化</td></tr>
+    <tr><td>SCK 时钟</td><td class="gpio">GPIO48</td></tr>
+    <tr><td>MOSI</td><td class="gpio">GPIO47</td></tr>
+    <tr><td rowspan="4">RGB 并口时序</td><td>DE 数据使能</td><td class="gpio">GPIO18</td><td rowspan="4">ST7701 并行总线控制信号</td></tr>
+    <tr><td>VSYNC 场同步</td><td class="gpio">GPIO17</td></tr>
+    <tr><td>HSYNC 行同步</td><td class="gpio">GPIO16</td></tr>
+    <tr><td>PCLK 像素时钟</td><td class="gpio">GPIO21</td></tr>
+    <tr><td rowspan="3">RGB 数据线</td><td>Red（5位）</td><td class="gpio">11 · 12 · 13 · 14 · 0</td><td rowspan="3">16bit 并行像素总线，已被屏占满</td></tr>
+    <tr><td>Green（6位）</td><td class="gpio">8 · 20 · 3 · 46 · 9 · 10</td></tr>
+    <tr><td>Blue（5位）</td><td class="gpio">4 · 5 · 6 · 7 · 15</td></tr>
+    <tr><td rowspan="2">I2C 总线</td><td>SDA</td><td class="gpio">GPIO19</td><td rowspan="2">GT911 触摸(0x5D)；可同总线扩 SHT40 温湿度</td></tr>
+    <tr><td>SCL</td><td class="gpio">GPIO45</td></tr>
+    <tr><td rowspan="3">继电器</td><td>Relay 1（本机已用）</td><td class="gpio">GPIO40</td><td>高电平触发，默认接继电器侧（R25）</td></tr>
+    <tr><td>Relay 2（三继版）</td><td class="gpio">GPIO2</td><td>单继版空闲，可作扩展</td></tr>
+    <tr><td>Relay 3（三继版）</td><td class="gpio">GPIO1</td><td>单继版空闲，可作扩展</td></tr>
+    <tr><td>SD 卡（未启用）</td><td>CS / MOSI / CLK / MISO</td><td class="gpio">42 · 47 · 48 · 41</td><td>与屏 SPI 共线，本固件未挂载</td></tr>
+  </table>
+
+  <div class="warn">
+    <b>安全警告：</b>后板继电器端子接触市电（220V），烧录、接线、拆机时必须断电；带电操作有触电风险，串口调试也不要在接市电时进行。
+  </div>
+
+  <div class="note">
+    说明：① 电池座、喇叭座、SW1 的具体引脚官方未公开，表中不臆测，需以拆机万用表实测为准。② GPIO1/GPIO2 在单继电器版本上释放后可作自定义扩展，但多数 GPIO 已被 RGB 屏并口占满，空闲脚极少。③ I2S 音频脚与继电器共用，靠 0Ω 电阻 R25/R26/R27 二选一，不能同时使用。
+  </div>
+</div>
+</body>
+</html>

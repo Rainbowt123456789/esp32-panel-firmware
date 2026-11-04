@@ -1,0 +1,134 @@
+# =====================================================================
+# ESP32 面板「家庭信息」页 - Home Assistant 模板配置（精简版）
+# 用法: 粘贴到 configuration.yaml 的 template: 段 (或新建模板文件 include)
+# 改完后: 开发者工具 -> YAML -> 重载模板实体
+# 实体 ID: sensor.panel_family_presence / sensor.panel_family_env / sensor.panel_bill_nas
+# 第三卡(用电+主机)由本文件 panel_bill_nas 聚合; logbook 直读已停用(偶发重启)
+# LVGL recolor 语法: #RRGGBB文字# 给文字上色; 换行 \n; 单个实体 state 限255字符
+# 常用色: #FF6B6B 红  #52D981 绿  #00D4FF 青  #FFD166 黄  #E8EDF2 白
+# =====================================================================
+
+template:
+  - sensor:
+      # ---------------- 卡片1第一行: 问候+人员名+到家时长 ----------------
+      # 室内person回不到home, 在家判定靠手机WiFi名称含<你家WiFi关键字>;
+      # person==not_home(明确在外/GPS)时门控, 不报到家时长, 避免WiFi残留旧SSID算出离谱小时数;
+      # 时长以WiFi重连到<你家WiFi>的 last_changed 起算(回家重连会刷新, 多次进出自动重置)
+      - name: "panel_family_presence"
+        unique_id: panel_family_presence
+        state: >
+          {% set h = now().hour %}
+          {% set hi = '早上好' if h < 11 else ('中午好' if h < 14 else ('下午好' if h < 18 else '晚上好')) %}
+          {% set pname = state_attr('person.zhen_zhen_meng', 'friendly_name') %}
+          {% if not pname %}{% set pname = '家人' %}{% endif %}
+          {% set line1 = hi ~ '，' ~ pname %}
+          {% set ssid = states('sensor.plf110_wu_xian_wang_luo_lian_jie') %}
+          {# 进门时刻由自动化写入 input_datetime.home_arrival(连上<你家WiFi>时刷新last_changed); 不依赖person(GPS在家也not_home) #}
+          {% set arr = states('input_datetime.home_arrival') %}
+          {% if '<你家WiFi关键字>' in ssid and arr not in ('unknown','unavailable','') %}
+            {% set sec = (now() - states.input_datetime.home_arrival.last_changed).total_seconds() %}
+            {% if sec < 60 %}{% set line1 = hi ~ '，' ~ pname ~ '，刚到家' %}
+            {% elif sec < 3600 %}{% set line1 = hi ~ '，' ~ pname ~ '，已到家' ~ (sec // 60) | int ~ '分钟' %}
+            {% else %}{% set line1 = hi ~ '，' ~ pname ~ '，已到家' ~ (sec / 3600) | round(1) ~ '小时' %}{% endif %}
+          {% else %}{% set line1 = hi ~ '，' ~ pname %}{% endif %}
+          {% set thr = 3 %}
+          {% set lm = ((now() - states.event.chuangmi_cn_1029990775_039a01_people_motion_e_8_2.last_changed).total_seconds() / 60) %}
+          {% set mm = ((now() - states.event.yeelink_cn_<你的设备>_3_1a3e4f9ak5k01_nl1_motion_detected_e_2_1.last_changed).total_seconds() / 60) %}
+          {% set b1 = ((now() - states.event.lumi_cn_blt_3_1bf4q9t3o5g04_bmgl01_motion_detected_e_2_1.last_changed).total_seconds() / 60) %}
+          {% set living = lm < thr %}
+          {% set master = mm < thr %}
+          {% set bath2 = states('binary_sensor.xiaomi_cn_<你的设备>_3_1ilkt26o04k01_03_occupancy_status_p_2_1078') == 'on' %}
+          {% set bath1 = b1 < thr %}
+          {% set rooms = '客厅 ' ~ ('有人' if living else '无人')
+                       ~ ' · 主卧 ' ~ ('有人' if master else '无人')
+                       ~ ' · 次卫 ' ~ ('有人' if bath2 else '无人')
+                       ~ ' · 主卫 ' ~ ('有人' if bath1 else '无人') %}
+          {{ line1 ~ '\n' ~ rooms }}
+
+      # ---------------- 卡片2: 室内/阳台温度+温差 + 电脑/NAS 功率 (无湿度, 纯白先保证出值) ----------------
+      # 阳台传感器为华氏°F, 需先转摄氏; 室内为°C
+      - name: "panel_family_env"
+        unique_id: panel_family_env
+        state: >
+          {% set temp = states('sensor.zhimi_cn_<你的设备>_ma2_temperature_p_3_3') | float(none) %}
+          {% set balf = states('sensor.linp_cn_<你的设备>_3_1ocpm3sm8c801_ks2bb_temperature_p_2_1001') | float(none) %}
+          {% set balc = ((balf - 32) * 5 / 9) if balf is not none else none %}
+          {% set diff = (temp - balc) | abs if (temp is not none and balc is not none) else none %}
+          {% set pc = states('sensor.zimi_cn_<你的设备>_v2_surge_power_p_3_1') | float(none) %}
+          {% set nas = states('sensor.zimi_cn_<你的设备>_zncz01_electric_power_p_10_1') | float(none) %}
+          {% set p3d = states('sensor.zimi_cn_<你的设备>_v2_surge_power_p_3_1') | float(none) %}
+          {% set l1 = '室内 ' ~ ('%0.1f'|format(temp) ~ '℃' if temp is not none else '--')
+                     ~ '  阳台 ' ~ ('%0.1f'|format(balc) ~ '℃' if balc is not none else '--')
+                     ~ '  温差 ' ~ ('%0.1f'|format(diff) ~ '℃' if diff is not none else '--') %}
+          {% set p1 = '电脑 ' ~ ('%0.0f'|format(pc) ~ 'W' if pc is not none else '--') %}
+          {% set p2 = 'NAS ' ~ ('%0.0f'|format(nas) ~ 'W' if nas is not none else '--') %}
+          {% set p3 = '3D打印 ' ~ ('%0.0f'|format(p3d) ~ 'W' if p3d is not none else '--') %}
+          {{ l1 ~ '\n' ~ p1 ~ '  · ' ~ p2 ~ '  · ' ~ p3 }}
+
+      # ---------------- 卡片3: 用电(今年电费/当月用电/上月电费/昨日用电) + HA主机(NAS)状态 ----------------
+      - name: "panel_bill_nas"
+        unique_id: panel_bill_nas
+        state: >
+          {% set base = 'sensor.99_01eb25be1b42483da0eb7154cc942888_02_osg_uc_2610111846_002_0912' %}
+          {% set yc = states(base ~ '_current_year_charge') | float(0) %}
+          {% set mu = states(base ~ '_current_month_usage') | float(0) %}
+          {% set pc = states(base ~ '_previous_settled_month_charge') | float(0) %}
+          {% set du = states(base ~ '_previous_daily_usage') | float(0) %}
+          {% set mem = states('sensor.system_monitor_memory_usage') | float(0) %}
+          {% set disk = states('sensor.system_monitor_disk_usage') | float(0) %}
+          {% set cpu = states('sensor.system_monitor_processor_use') | float(0) %}
+          {% set ctc = (states('sensor.system_monitor_processor_temperature') | float(0) - 32) * 5 / 9 %}
+          {% set l1 = '今年电费 ¥' ~ ('%0.2f'|format(yc)) ~ '   本月已用电 ' ~ ('%0.1f'|format(mu)) ~ '度' %}
+          {% set l2 = '上月电费 ¥' ~ ('%0.2f'|format(pc)) ~ '   昨日已用电 ' ~ ('%0.1f'|format(du)) ~ '度' %}
+          {% set l3 = '服务器 CPU' ~ ('%0.0f'|format(cpu)) ~ '% 内存' ~ ('%0.0f'|format(mem)) ~ '% 磁盘' ~ ('%0.0f'|format(disk)) ~ '% ' ~ ('%0.0f'|format(ctc)) ~ '℃' %}
+          {{ l1 ~ '\n' ~ l2 ~ '\n' ~ l3 }}
+
+      # ---------------- 卡1房间有人/无人独立文本(供固件分色: 有人红/无人灰) ----------------
+      - name: "panel_room_living"
+        unique_id: panel_room_living
+        state: "{{ '有人' if ((now() - states.event.chuangmi_cn_1029990775_039a01_people_motion_e_8_2.last_changed).total_seconds()/60) < 3 else '无人' }}"
+      - name: "panel_room_master"
+        unique_id: panel_room_master
+        state: "{{ '有人' if ((now() - states.event.yeelink_cn_<你的设备>_3_1a3e4f9ak5k01_nl1_motion_detected_e_2_1.last_changed).total_seconds()/60) < 3 else '无人' }}"
+      - name: "panel_room_bath2"
+        unique_id: panel_room_bath2
+        state: "{{ '有人' if states('binary_sensor.xiaomi_cn_<你的设备>_3_1ilkt26o04k01_03_occupancy_status_p_2_1078') == 'on' else '无人' }}"
+      - name: "panel_room_bath1"
+        unique_id: panel_room_bath1
+        state: "{{ '有人' if ((now() - states.event.lumi_cn_blt_3_1bf4q9t3o5g04_bmgl01_motion_detected_e_2_1.last_changed).total_seconds()/60) < 3 else '无人' }}"
+
+# ============================================================
+# 进门时刻记录: 手机从非家里WiFi切到家里WiFi(SSID含<你家WiFi关键字>)时, 把当前时间写入 home_arrival,
+# panel_family_presence 用它的 last_changed 算"本次到家时长", 多次进出自动重置。
+# 注意: input_datetime 放 configuration.yaml 顶级 input_datetime: 段; automation 放 automation: 段。
+# ============================================================
+input_datetime:
+  home_arrival:
+    name: 进门时刻
+    has_date: true
+    has_time: true
+
+automation:
+  - alias: 记录进门时刻(连上家里WiFi)
+    trigger:
+      - platform: state
+        entity_id: sensor.plf110_wu_xian_wang_luo_lian_jie
+    condition:
+      - condition: template
+        value_template: >
+          {{ trigger.to_state is not none and '<你家WiFi关键字>' in (trigger.to_state.state or '')
+             and (trigger.from_state is none or '<你家WiFi关键字>' not in (trigger.from_state.state or '')) }}
+    action:
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.home_arrival
+        data:
+          datetime: "{{ now() }}"
+
+# ============================================================
+# 第三卡 panel_bill_nas: 国家电网(今年电费/当月用电/上月电费/昨日用电)
+# + system_monitor 主机(内存/磁盘/CPU华氏转摄氏), 全部走HA小实体, 稳定不重启。
+# 原 logbook 活动直读已停用(大响应偶发重启), 不再需要HA地址/令牌直连。
+# 电脑「工作电源」插座无实时功率, 卡2暂读浪涌功率占位。
+# 卡1在家判定走手机「无线网络连接」SSID(含<你家WiFi关键字>=在家), 不依赖GPS/person定位。
+# ============================================================

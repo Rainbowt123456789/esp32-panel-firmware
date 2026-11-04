@@ -1,0 +1,5117 @@
+# ============================================================
+# ESP32-S3 ESP32-4848S040 智能家庭控制面板 · 中文 5 屏 真真梦2026-11 原文链接https://post.smzdm.com/p/ad7mk30x/
+# 方案: ESPHome + Home Assistant (原生集成)
+# 硬件: 4.0" 480x480 IPS (ST7701) + GT911 触摸 + 一路继电器 + SHT20 温湿度(如有)
+# 使用: 见 README.md (安装/烧录/HA 接入/故障排查)
+# ============================================================
+
+substitutions:
+  # 设备名(小写字母数字下划线)
+  name: esp32-panel
+  friendly_name: 智能控制面板
+  device_description: ESP32-S3 ESP32-4848S040 86型智能面板
+  # ★★★ 继电器要控制的灯的名字，直接改成你的（如：客厅灯L / 卧室灯L / 门厅灯L）
+  # 提醒: 名字需含至少一个 ASCII 字母/数字(L=Light 灯), 纯中文名会与其他中文实体冲突
+  relay_name: 客厅灯L
+  # 继电器 GPIO (出厂默认 IO40 --R25--> relay1，与 I2S 音频共用，板上默认接继电器)
+  relay_pin: GPIO40
+  # ★ 主页显示的家庭名 (直接改成你的, 如: 温馨之家 / 幸福小窝)
+  home_name: 温馨之家
+  # ★ 主页 6 类扩展数据 + 通知, 默认订阅的 HA 中间实体 (在 HA 里建同名 template sensor 指向真实数据源)
+  #   温度:     sensor.panel_temp   湿度: sensor.panel_hum
+  #   空气质量: sensor.panel_air    水质:  sensor.panel_water
+  #   电费余额: sensor.panel_elec   包裹:  sensor.panel_package
+  #   通知栏:   sensor.panel_notice
+  temp_entity: sensor.panel_temp
+  hum_entity: sensor.panel_hum
+  air_entity: sensor.panel_air
+  water_entity: sensor.panel_water
+  elec_entity: sensor.panel_elec
+  pkg_entity: sensor.panel_package
+  notice_entity: sensor.panel_notice
+  # 地理编码失败时的兜底坐标 (北京); 正常天气按面板城市名经地理编码动态定位
+  w_lat: "30.05"
+  w_lon: "103.83"
+  # ★ HA Logbook 直读默认值: 首次烧录后在面板网页(http://面板IP)或HA里直接改, 存NVS免刷机
+  #   令牌获取: HA 左下角头像 -> 个人设置 -> 长期访问令牌 -> 创建令牌, 整串粘贴到「HA令牌」
+  ha_host: "192.168.1.10:8123"
+  ha_token: ""
+  # ★ 墨水屏推送策略: 开机后延迟 N 秒推第一次 (墨水屏已连接才推)
+  #   推送间隔像家庭名一样在此设置(分钟); 若 HA 里有 number.epd_push_interval_min 则以 HA 值为准(免刷机)
+  epd_first_delay_s: 30
+  epd_push_interval_min: "30"
+  # ★ 首页卡1(原"系统"卡) 自定义: 名称 + 数据实体(HA sensor), 如 快递/新闻/门磁/能耗 等
+  #   名称 → text.卡1名称 (HA 里改, 免刷机); 数据 → 绑 HA 中间实体 sensor.panel_card1 (HA 模板里指向任意实体, 换数据只改 HA, 免刷机)
+  card1_title: 系统
+  card1_entity: sensor.panel_card1
+
+  # ============================================================
+  # ★★★ 设备实体映射表 (换设备/发给别人时，只改这一张表) ★★★
+  # 下面都是你家 HA 里真实的 entity_id；改成自己的即可，
+  # 面板内所有订阅、按钮、滑条都引用这里，不用到处找。
+  # 说明: 中间聚合实体(sensor.panel_*)走 HA 模板，见 README 第六节，不在本表。
+  # ============================================================
+  # --- 墨水屏 BLE (固定配对, 编译期配置) ---
+  epd_mac: "AA:BB:CC:DD:EE:FF"  # 改成你墨水屏的真实BLE MAC
+  # --- ESP32 Monitor 全家桶状态页地址 (另一台 ESP32 提供纯文本接口) ---
+  monitor_url: "http://192.168.1.20/api/text"
+  # --- 首页卡2 原始传感器 (进/出风温度、PC/NAS/3D打印机功率) ---
+  ac_in_temp: sensor.<进风温度实体>
+  balcony_temp: sensor.<阳台温度实体>
+  pc_power: sensor.<电脑功率实体>
+  nas_power: sensor.<NAS功率实体>
+  p3d_power: sensor.<3D打印机功率实体>
+  # --- 灯光页 4 盏灯 (按钮位置: L1无 / L2吸顶灯 / L3台灯 / L4吊灯 / L5阳台灯) ---
+  light2: light.<吸顶灯实体>
+  light3: light.<吊灯实体>
+  light4: light.<阳台灯实体>
+  light5: light.<灯5实体>
+  strip_light: light.<灯带实体>
+  # --- 窗帘 ---
+  curtain: cover.<窗帘实体>
+  # --- 燃气热水器 ---
+  wh_switch: switch.ran_qi_re_shui_qi_kai_guan_ji_zhuang_tai
+  wh_target_temp: number.ran_qi_re_shui_qi_mu_biao_wen_du
+  wh_mode: select.ran_qi_re_shui_qi_xi_yu_zhuang_tai
+  wh_in_temp: sensor.ran_qi_re_shui_qi_jin_shui_wen_du
+  wh_out_temp: sensor.ran_qi_re_shui_qi_chu_shui_wen_du
+  wh_flame: binary_sensor.ran_qi_re_shui_qi_huo_yan_you_wu
+  # --- 空调 ---
+  ac: climate.<空调实体>
+  # --- 其他开关 ---
+  misc_switch1: switch.<其他开关实体>
+  # --- 场景页 8 个场景 (HA 里 script/scene 的 entity_id) ---
+  scene_home: scene.<回家场景>
+  scene_leave: scene.<离家场景>
+  scene_sleep: scene.<睡眠场景>
+  scene_off_all: scene.<观影场景>
+  scene_fan: scene.<通风场景>
+  scene_guard: scene.<布防场景>
+  scene_garage: scene.<车库场景>
+  scene_all_off: scene.<全关场景>
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  comment: ${device_description}
+  # 自定义分区: app 分区加大, 容纳中文字库 (16MB flash)
+  platformio_options:
+    board_build.partitions: partitions.csv
+  project:
+    name: diy.esp32-panel
+    version: "1.0.0"
+  # 开机: 读取 text 实体设置的间隔(分钟) + 延迟 ${epd_first_delay_s} 秒排首次推送
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // g_screen_timeout_s 由全局自身 NVS restore, 不在此被 text 覆盖; text on_value 仍会同步
+          id(g_bright_norm) = 1.0;
+          id(g_asleep) = false;
+          id(g_last_touch_ms) = millis();
+          int v = atoi(id(epd_interval_text).state.c_str());
+          if (v < 0) v = 5;
+          if (v > 1440) v = 1440;
+          id(epd_push_interval_s) = v * 60;   // text 实体(HA 可改) 优先级最高; 0 = 停推
+          if (v == 0) {
+            id(g_epd_status) = "推送已停用(间隔=0)";
+            id(epd_next_push_at) = 0xFFFFFFFF;   // 永不推送
+            id(epd).set_auto_connect(false);
+          } else {
+            id(epd_next_push_at) = (uint32_t) (millis() + ${epd_first_delay_s} * 1000);
+            // 开机即待命扫描连接(无需手动点一次切换才触发), 到点直接推; 推完脚本内会断开并关 auto_connect
+            id(epd).set_auto_connect(true);
+          }
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    version: 5.4.2
+    sdkconfig_options:
+      COMPILER_OPTIMIZATION_SIZE: "y"
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: y
+      CONFIG_SPIRAM_RODATA: y
+
+# 8MB Octal PSRAM
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: VERY_VERBOSE
+
+# 待写偏好每100ms批量落一次NVS(默认60s), 保证改完短时间内重启也不丢设置
+preferences:
+  flash_write_interval: 100ms
+
+# Home Assistant 原生接入(通过 API)
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # 断网时自动开热点供配网
+  ap:
+    ssid: "${name}-fallback"
+    password: !secret ap_password
+  # 连接 WiFi 后先地理编码城市, 成功后自动拉天气 (Open-Meteo, 免 key)
+  on_connect:
+    then:
+      - script.execute: fetch_geo
+      - script.execute: fetch_logbook
+
+# BLE 扫描 (墨水屏 NRF_EPD 发现 + MAC 显示)
+# 平时低占空比偶扫, 避免全速常驻扫描抢 CPU/射频导致切页卡顿; 墨水屏按已知MAC主动连接, 不依赖持续扫描
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 5s
+    window: 30ms
+  on_ble_advertise:
+    - then:
+        - lambda: |-
+            std::string nm = std::string(x.get_name());
+            if (nm.find("NRF_EPD") != std::string::npos) {
+              id(g_epd_mac) = x.address_str();
+              ESP_LOGI("epd", "EPD device: %s", id(g_epd_mac).c_str());
+            }
+
+# 墨水屏 BLE 客户端 (EPD-nRF5_DYC, SSD1619 400x300 三色)
+ble_client:
+  - id: epd
+    mac_address: "${epd_mac}"
+    auto_connect: false   # 关闭自动重连: 推送完成主动断开后不马上重连, 由推送状态机到点主动 connect
+    on_connect:
+      then:
+        - logger.log:
+            format: "EPD connected: %s"
+            args: ["id(g_epd_mac).c_str()"]
+        - lambda: |-
+            id(g_epd_status) = "已连接，等待定时推送";
+            id(epd_connected) = true;
+            // 若是推送到点时的主动重连: 连接成功后 1s 立即推送(不等下一个间隔)
+            if (id(g_epd_reconnect_requested)) {
+              id(g_epd_reconnect_requested) = false;
+              id(epd_next_push_at) = (uint32_t)(millis() + 1000);
+            }
+    on_disconnect:
+      then:
+        - logger.log: "EPD disconnected"
+        - lambda: |-
+            id(g_epd_status) = "墨水屏已断开";
+            id(epd_connected) = false;
+
+# 可选: 局域网固定 IP (更稳), 取消注释并填写
+#   manual_ip:
+#     static_ip: 192.168.1.88
+#     gateway: 192.168.1.1
+#     subnet: 255.255.255.0
+
+# 浏览器调试页 http://<ip>
+web_server:
+  port: 80
+
+# ---------------- 时间(首页大时钟) ----------------
+time:
+  - platform: sntp
+    id: my_time
+    servers:
+      - pool.ntp.org
+    on_time:
+      # 每秒刷新时钟/日期 label (lvgl.widget.refresh 会重新求值 label 的动态 text)
+      - seconds: /1
+        then:
+          - lvgl.widget.refresh: [lbl_time, lbl_date, lbl_weather_icon, lbl_home_name, lbl_wifi_icon]
+
+      # 深夜自动模式: 每分钟检查时间, 23:00-07:00 切家庭页+背光30%, 白天切回首页+背光100%
+      - minutes: /1
+        then:
+          - lambda: |-
+              if (!id(g_night_mode)) {
+                if (id(g_night_active)) {
+                  id(g_night_active) = false;
+                  id(g_bright_norm) = 1.0;
+                }
+                return;
+              }
+              if (!id(my_time).now().is_valid()) return;
+              int h = id(my_time).now().hour;
+              bool is_night = (h >= 23 || h < 7);
+              if (is_night == id(g_night_active)) return;
+              id(g_night_active) = is_night;
+              id(g_bright_norm) = is_night ? 0.3f : 1.0f;
+          - if:
+              condition:
+                lambda: 'return id(g_night_active);'
+              then:
+                - light.turn_on:
+                    id: backlight
+                    brightness: 0.3
+              else:
+                - light.turn_on:
+                    id: backlight
+                    brightness: 1.0
+
+# ---------------- 传感器 ----------------
+sensor:
+  # WiFi 信号
+  - platform: wifi_signal
+    name: WiFi信号
+    id: wifi_sig
+    update_interval: 30s
+  # 运行时长 (名字带 ASCII 后缀 U, 避免与纯中文实体名冲突)
+  - platform: uptime
+    name: 运行时间U
+    id: up_sensor
+    update_interval: 60s
+  # ---------- 主页 6 卡数据 (全部订阅 HA 中间实体, 在 HA 里配置指向真实数据源) ----------
+  - platform: homeassistant
+    id: ha_temp
+    entity_id: ${temp_entity}
+  - platform: homeassistant
+    id: ha_hum
+    entity_id: ${hum_entity}
+  - platform: homeassistant
+    id: ha_air
+    entity_id: ${air_entity}
+  - platform: homeassistant
+    id: ha_water
+    entity_id: ${water_entity}
+  - platform: homeassistant
+    id: ha_elec
+    entity_id: ${elec_entity}
+  # 首页卡1 自定义实体 (标题/实体在顶部 substitutions 配置)
+  - platform: homeassistant
+    id: ha_card1
+    entity_id: ${card1_entity}
+
+# 可配置文本 (家庭名/问候语): HA 里可直接编辑, 面板实时显示; 未来配置页复用
+text:
+  - platform: template
+    id: home_name_text
+    name: 家庭名称
+    mode: TEXT
+    optimistic: true
+    initial_value: "${home_name}"
+    restore_value: true
+  - platform: template
+    id: home_quote
+    name: 面板问候语
+    mode: TEXT
+    optimistic: true
+    initial_value: "欢迎回家"
+    restore_value: true
+    on_value:
+      then:
+        - lambda: 'id(g_greet_seg) = 0;'
+        - lvgl.widget.refresh: lbl_greet
+  # 墨水屏推送间隔(分钟): HA 里直接改数值(5~1440), 免刷机; 与家庭名称同为 text 实体
+  - platform: template
+    id: epd_interval_text
+    name: 墨水屏推送间隔(分钟)
+    mode: TEXT
+    optimistic: true
+    initial_value: "${epd_push_interval_min}"
+    restore_value: true
+    on_value:
+      then:
+        - lambda: |-
+            int v = atoi(id(epd_interval_text).state.c_str());
+            if (v < 0) v = 5;
+            if (v > 1440) v = 1440;
+            id(epd_push_interval_s) = v * 60;
+            if (v == 0) {
+              id(g_epd_status) = "推送已停用(间隔=0)";
+              id(epd_next_push_at) = 0xFFFFFFFF;   // 0 = 停推
+              id(epd).set_auto_connect(false);
+            } else {
+              id(epd).set_auto_connect(true);
+              // 开机实体晚于 on_boot 恢复: 若被误置停推, 这里自愈并补排首次推送
+              if (id(epd_next_push_at) == 0xFFFFFFFF)
+                id(epd_next_push_at) = (uint32_t)(millis() + 3000);
+            }
+            ESP_LOGI("epd", "push interval set: %d min -> %d s", v, v * 60);
+  # 背景主题: "0"=深蓝 "1"=深紫 "2"=深粉
+  - platform: template
+    id: bg_theme_text
+    name: 面板背景主题
+    mode: TEXT
+    optimistic: true
+    initial_value: "0"
+    restore_value: true
+  # 自动熄屏(秒): HA/面板直接改, 存NVS免刷机; 0=永不熄屏, 范围0~3600
+  - platform: template
+    id: screen_timeout_text
+    name: 自动熄屏(秒)
+    mode: TEXT
+    optimistic: true
+    initial_value: "120"
+    restore_value: true
+    on_value:
+      then:
+        - lambda: |-
+            int v = atoi(id(screen_timeout_text).state.c_str());
+            if (v < 0) v = 0;
+            if (v > 3600) v = 3600;
+            id(g_screen_timeout_s) = v;
+            ESP_LOGI("screen", "timeout set: %d s", v);
+  # 首页卡1 名称: HA 里直接改(如 快递/大门/今日用电), 免刷机
+  - platform: template
+    id: card1_title_text
+    name: 卡1名称
+    mode: TEXT
+    optimistic: true
+    initial_value: "${card1_title}"
+    restore_value: true
+  # 天气城市: 既是屏幕显示名, 也是天气地理编码输入; 改名字后自动重新定位并拉天气
+  - platform: template
+    id: city_text
+    name: 天气城市(city)
+    mode: TEXT
+    optimistic: true
+    initial_value: "北京"
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: fetch_geo
+  # HA 内网地址(不带 http://, 如 192.168.1.10:8123): 面板网页/HA 直接改, 存本地NVS, 免刷机
+  - platform: template
+    id: ha_host_text
+    name: HA地址(host)
+    mode: TEXT
+    optimistic: true
+    initial_value: "${ha_host}"
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: fetch_logbook
+  # HA 长期访问令牌: 面板网页/HA 直接填, 存本地NVS, 免刷机; 留空则活动页提示未配置
+  - platform: template
+    id: ha_token_text
+    name: HA令牌(token)
+    mode: TEXT
+    optimistic: true
+    initial_value: "${ha_token}"
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: fetch_logbook
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: IP地址
+      id: ip_addr
+  # 包裹/通知 (HA 中间实体, 文本型)
+  - platform: homeassistant
+    id: ha_package
+    entity_id: ${pkg_entity}
+  - platform: homeassistant
+    id: ha_notice
+    entity_id: ${notice_entity}
+  # 家庭信息页 2 个文本实体 (HA 模板聚合, 支持 LVGL recolor 颜色标签 #RRGGBB文字#)
+  - platform: homeassistant
+    id: ha_family_presence
+    entity_id: sensor.panel_family_presence
+  - platform: homeassistant
+    id: ha_family_env
+    entity_id: sensor.panel_family_env
+  # 第三卡: 用电(今年电费/当月用电/上月电费/昨日用电)+HA主机(NAS)状态, HA模板聚合
+  - platform: homeassistant
+    id: ha_family_bill
+    entity_id: sensor.panel_bill_nas
+  # 卡1房间有人/无人独立文本(分色)
+  - platform: homeassistant
+    id: ha_room_living
+    entity_id: sensor.panel_room_living
+  - platform: homeassistant
+    id: ha_room_master
+    entity_id: sensor.panel_room_master
+  - platform: homeassistant
+    id: ha_room_bath2
+    entity_id: sensor.panel_room_bath2
+  - platform: homeassistant
+    id: ha_room_bath1
+    entity_id: sensor.panel_room_bath1
+  # 卡2 原始传感器(直接订阅, 固件分色)
+  - platform: homeassistant
+    id: ha_temp_in
+    entity_id: ${ac_in_temp}
+  - platform: homeassistant
+    id: ha_temp_bal
+    entity_id: ${balcony_temp}
+  - platform: homeassistant
+    id: ha_pc
+    entity_id: ${pc_power}
+  - platform: homeassistant
+    id: ha_nas
+    entity_id: ${nas_power}
+  - platform: homeassistant
+    id: ha_p3d
+    entity_id: ${p3d_power}
+  # ===== 灯光页 按钮2~5 灯状态回显(订阅 light 实体 on/off; 换灯改 entity_id) =====
+  - platform: homeassistant
+    id: ha_l2_state
+    entity_id: ${light2}
+  - platform: homeassistant
+    id: ha_l3_state
+    entity_id: ${light3}
+  - platform: homeassistant
+    id: ha_l4_state
+    entity_id: ${light4}
+  - platform: homeassistant
+    id: ha_l5_state
+    entity_id: ${light5}
+  # 吸顶灯 亮度/色温: 不做回显(米家量化档位差会来回跳), 滑条纯单向发送, 拖到什么值给灯什么值
+  # 窗帘当前开合度(0全关~100全开), 用于滑条位置回显
+  - platform: homeassistant
+    id: ha_curtain_pos
+    entity_id: ${curtain}
+    attribute: current_position
+    on_value:
+      then:
+        - lambda: 'id(g_cur_sync) = true;'
+        # HA position 100=全开; 滑条反转 0=全开 100=全关 -> 滑条值=100-p
+        - lvgl.slider.update:
+            id: demo_curtain_slider
+            value: !lambda |-
+                float p = atof(id(ha_curtain_pos).state.c_str());
+                return 100.0f - p;
+  # ===== 开关页 热水器/空调 回显 =====
+  - platform: homeassistant
+    id: ha_wh_sw
+    entity_id: ${wh_switch}
+  - platform: homeassistant
+    id: ha_wh_temp
+    entity_id: ${wh_target_temp}
+  - platform: homeassistant
+    id: ha_wh_mode
+    entity_id: ${wh_mode}
+  # 热水器 进/出水温度(华氏, 固件内转摄氏) + 火焰有无(运行状态)
+  - platform: homeassistant
+    id: ha_wh_in
+    entity_id: ${wh_in_temp}
+  - platform: homeassistant
+    id: ha_wh_out
+    entity_id: ${wh_out_temp}
+  - platform: homeassistant
+    id: ha_wh_flame
+    entity_id: ${wh_flame}
+  - platform: homeassistant
+    id: ha_ac_state
+    entity_id: ${ac}
+  - platform: homeassistant
+    id: ha_ac_cur
+    entity_id: ${ac}
+    attribute: current_temperature
+  - platform: homeassistant
+    id: ha_ac_set
+    entity_id: ${ac}
+    attribute: temperature
+
+# 天气 API 数据 (Open-Meteo, 免 key)
+globals:
+  - id: g_family_activity
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: g_ha_url
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: g_auth_header
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: g_weather
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_weather_temp
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  - id: g_weather_code
+    type: int
+    restore_value: no
+    initial_value: '-1'
+  - id: g_city
+    type: std::string
+    restore_value: no
+    initial_value: '"北京"'
+  - id: g_weather_hum
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  # 地理编码得到的当前城市经纬度 (NAN = 尚未解析成功, 天气请求回退默认北京坐标)
+  - id: g_geo_lat
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  - id: g_geo_lon
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  - id: g_epd_mac
+    type: std::string
+    restore_value: no
+    initial_value: '"扫描中..."'
+  - id: g_epd_status
+    type: std::string
+    restore_value: no
+    initial_value: '"等待墨水屏连接..."'
+  - id: g_epd_ch_handle
+    type: uint16_t
+    restore_value: no
+    initial_value: '0'
+  # ---- 墨水屏推送策略状态 (间隔可由 HA number 实体外部调整, 免刷机) ----
+  - id: epd_connected
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: epd_next_push_at
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  - id: epd_push_interval_s
+    type: int
+    restore_value: no
+    initial_value: '1800'
+  - id: g_epd_reconnect_requested
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # 墨水屏内容源: "home"=首页六卡 / "family"=家庭信息三卡; NVS持久化, 设置页按钮切换
+  - id: g_epd_source
+    type: std::string
+    restore_value: yes
+    initial_value: '"home"'
+  # ---- 自动熄屏: 闲置 g_screen_timeout_s 秒后降背光, 触摸唤醒; 0=永不; 全局自身存NVS, 按钮改完重启不丢 ----
+  - id: g_screen_timeout_s
+    type: int
+    restore_value: yes
+    initial_value: '120'
+  - id: g_asleep
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_bright_norm
+    type: float
+    restore_value: no
+    initial_value: '1.0'
+  - id: g_last_touch_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  # 问候语分段轮播: g_greet_seg 当前段索引(按 | 分段, 每3秒切换循环)
+  - id: g_greet_seg
+    type: int
+    restore_value: no
+    initial_value: '0'
+  # 窗帘滑条远程回填防回环: true=程序回填, on_value 跳过发送
+  - id: g_cur_sync
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # ---- 深夜自动模式: 23:00-07:00 自动切家庭页+背光30%, 白天切回首页+背光100%; NVS持久化, 设置页开关 ----
+  - id: g_night_mode
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: g_night_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # ---- ESP32 Monitor 全家桶状态页缓存 ----
+  - id: g_mon_pc_online
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_mon_pc_cpu
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_pc_temp
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_bambu_online
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_mon_bambu_state
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_bambu_progress
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_bambu_remain
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_bambu_layer
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_feiniu_online
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_mon_feiniu_cpu
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_feiniu_disk
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_syno_online
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_mon_syno_cpu
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_syno_disk
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_syno_temp
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_router_online
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_mon_router_clients
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_router_wan
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_mon_router_rx
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_router_tx
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_pc_mem
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_feiniu_temp
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_pc_gpu
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_nas1_mem
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_nas2_mem
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: g_mon_charger_online
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: g_mon_ch_p
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_debug
+    type: std::string
+    restore_value: no
+    initial_value: '"未请求"'
+  - id: g_mon_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # 全家桶6行文本(直接从/api/text读, 不用解析)
+  - id: g_mon_row1
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_row2
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_row3
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_row4
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_row5
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  - id: g_mon_row6
+    type: std::string
+    restore_value: no
+    initial_value: '"--"'
+  # 设备名(从 API name 字段读)
+  - id: g_mon_name_pc
+    type: std::string
+    restore_value: no
+    initial_value: '"PC"'
+  - id: g_mon_name_bm
+    type: std::string
+    restore_value: no
+    initial_value: '"拓竹"'
+  - id: g_mon_name_nas1
+    type: std::string
+    restore_value: no
+    initial_value: '"NAS1"'
+  - id: g_mon_name_nas2
+    type: std::string
+    restore_value: no
+    initial_value: '"NAS2"'
+  - id: g_mon_name_ch
+    type: std::string
+    restore_value: no
+    initial_value: '"插座"'
+  - id: g_mon_name_rt
+    type: std::string
+    restore_value: no
+    initial_value: '"路由"'
+
+http_request:
+  id: http_client
+  timeout: 30s
+  useragent: esp32-panel
+
+# 天气拉取脚本 (WiFi 连接后立即 + 每 30 分钟)
+script:
+  # 墨水屏推送测试: INIT -> RESET -> 分块(bw层) -> 分块(red层) -> REFRESH
+  - id: epd_push_test
+    mode: restart
+    then:
+      - lambda: |-
+          ESP_LOGI("epd", "=== EPD push test start ===");
+          id(g_epd_status) = "推送开始，查找特征...";
+          // 128位 UUID 小端传输序: 62750001-d828-918d-fb46-b6c11c675aec
+          uint8_t svc_b[16] = {0xec,0x5a,0x67,0xc6,0x1c,0x6b,0x46,0xfb,0x8d,0x91,0x28,0xd8,0x01,0x00,0x75,0x62};
+          uint8_t ch_b[16]  = {0xec,0x5a,0x67,0xc6,0x1c,0x6b,0x46,0xfb,0x8d,0x91,0x28,0xd8,0x02,0x00,0x75,0x62};
+          auto svc = esp32_ble_tracker::ESPBTUUID::from_raw(svc_b);
+          auto ch_u = esp32_ble_tracker::ESPBTUUID::from_raw(ch_b);
+          auto svc_r = esp32_ble_tracker::ESPBTUUID::from_raw_reversed(svc_b);
+          auto ch_r = esp32_ble_tracker::ESPBTUUID::from_raw_reversed(ch_b);
+          auto *ch = id(epd)->get_characteristic(svc, ch_u);
+          if (ch == nullptr) {
+            ch = id(epd)->get_characteristic(svc_r, ch_r);
+            if (ch != nullptr) {
+              ESP_LOGI("epd", "UUID REVERSED matched");
+              id(g_epd_status) = "特征OK(反转序)";
+            }
+          }
+          // 服务发现时序兜底: 最多等 5 次 (每次 200ms)
+          for (int attempt = 0; attempt < 5 && ch == nullptr; attempt++) {
+            delay(200);
+            ch = id(epd)->get_characteristic(svc, ch_u);
+            if (ch == nullptr) {
+              ch = id(epd)->get_characteristic(svc_r, ch_r);
+              if (ch != nullptr) {
+                ESP_LOGI("epd", "UUID REVERSED matched (retry %d)", attempt);
+                id(g_epd_status) = "特征OK(反转序,延时)";
+              }
+            }
+          }
+          if (ch == nullptr) {
+            ESP_LOGE("epd", "EPD data characteristic not found (both byte orders)");
+            // ---- 诊断: ESP-IDF 原生枚举 GATT 数据库 ----
+            extern int g_epd_dbg_push;
+            extern int g_epd_dbg_release;
+            auto *clt = id(epd);
+            int gif = clt->get_gattc_if();
+            uint16_t cid = clt->get_conn_id();
+            esp_gattc_service_elem_t svcs[8];
+            uint16_t scnt = 8;
+            esp_gatt_status_t gst = esp_ble_gattc_get_service(gif, cid, nullptr, svcs, &scnt, 0);
+            ESP_LOGI("epd", "GATT get_service status=0x%02x count=%d", gst, scnt);
+            {
+              char stbuf[64];
+              // gst: 0=OK 0x85=连接已失效 0x0a=未完成  S=SEARCH_RES事件数(设备是否响应发现)
+              ESP_LOGI("epd", "GATT get_service status=0x%02x count=%d SEARCH_RES=%d", gst, scnt, clt->get_service_count());
+              snprintf(stbuf, sizeof(stbuf), "S=%d", clt->get_service_count());
+              id(g_epd_status) = std::string(stbuf);
+            }
+            // ---- 定向 UUID 查询 (绕过全量发现的解析问题) ----
+            {
+              esp_bt_uuid_t cuuid;
+              cuuid.len = ESP_UUID_LEN_128;
+              memcpy(cuuid.uuid.uuid128, ch_b, 16);
+              esp_gattc_char_elem_t cq[2];
+              uint16_t cqc = 2;
+              esp_gatt_status_t qc = esp_ble_gattc_get_char_by_uuid(gif, cid, 0x0001, 0xFFFF, cuuid, cq, &cqc);
+              ESP_LOGI("epd", "char_by_uuid status=0x%02x count=%d", qc, cqc);
+              if (qc == ESP_GATT_OK && cqc > 0) {
+                char stbuf[48];
+                snprintf(stbuf, sizeof(stbuf), "定向特征OK h=%04x", cq[0].char_handle);
+                id(g_epd_status) = std::string(stbuf);
+              } else {
+                // ESPHome 内部服务列表诊断: 数量 + 服务0 UUID 长度(2=16位被转换 16=128位)
+                auto &svcs_v = clt->get_services();
+                char stbuf[64];
+                extern int g_epd_dbg_psize;
+                extern uint32_t g_epd_dbg_obj;
+                snprintf(stbuf, sizeof(stbuf), "C=%d O1=%08X O2=%08X", (int) svcs_v.size(),
+                         (unsigned int) g_epd_dbg_obj, (unsigned int) (uintptr_t) clt);
+                id(g_epd_status) = std::string(stbuf);
+              }
+            }
+            if (gst == ESP_GATT_OK) {
+              // 遍历所有服务找 EPD 数据特征 62750002 (字符串比较, 免疫 UUID 字节序/转换)
+              uint16_t found_handle = 0;
+              for (uint16_t i = 0; i < scnt && found_handle == 0; i++) {
+                esp_gattc_char_elem_t chrs[16];
+                uint16_t ccnt = 16;
+                if (esp_ble_gattc_get_all_char(gif, cid, svcs[i].start_handle, svcs[i].end_handle, chrs, &ccnt, 0) != ESP_GATT_OK)
+                  continue;
+                for (uint16_t k = 0; k < ccnt; k++) {
+                  char ubuf[40];
+                  esp32_ble_tracker::ESPBTUUID::from_uuid(chrs[k].uuid).to_str(ubuf);
+                  ESP_LOGI("epd", "CHR[%d/%d] %s h=%04x", i, k, ubuf, chrs[k].char_handle);
+                  std::string us = ubuf;
+                  if (us.find("62750002") != std::string::npos) {
+                    found_handle = chrs[k].char_handle;
+                    break;
+                  }
+                }
+              }
+              if (found_handle) {
+                id(g_epd_ch_handle) = found_handle;
+                char stbuf[48];
+                snprintf(stbuf, sizeof(stbuf), "EPD CHR h=%04x", found_handle);
+                id(g_epd_status) = std::string(stbuf);
+              } else {
+                esp_gattc_char_elem_t chrs[16];
+                uint16_t ccnt = 16;
+                if (esp_ble_gattc_get_all_char(gif, cid, svcs[0].start_handle, svcs[0].end_handle, chrs, &ccnt, 0) == ESP_GATT_OK) {
+                  char stbuf[64];
+                  char ubuf[40];
+                  esp32_ble_tracker::ESPBTUUID::from_uuid(chrs[0].uuid).to_str(ubuf);
+                  snprintf(stbuf, sizeof(stbuf), "C0:%.16s h=%04x", ubuf, chrs[0].char_handle);
+                  id(g_epd_status) = std::string(stbuf);
+                }
+              }
+            }
+            if (id(g_epd_ch_handle) == 0) {
+              id(g_epd_status) = "特征handle未找到";
+            }
+            // 有 handle(原生枚举或 ESPHome services_) 时继续走推送
+          }
+          if (ch != nullptr) {
+            // ESPHome 路径: 直接用特征 handle
+            id(g_epd_ch_handle) = ch->handle;
+          }
+          ESP_LOGI("epd", "characteristic OK");
+          if (id(g_epd_ch_handle) == 0) {
+            id(g_epd_status) = "推送中止: 无特征handle";
+            return;
+          }
+          // === 后台诊断版: 主循环运行, notify 实时处理, ACK/NACK 统计定位块被拒原因 ===
+          extern std::vector<uint8_t> g_epd_bw;
+          extern std::vector<uint8_t> g_epd_red;
+          extern volatile bool g_epd_push_running;
+          extern volatile uint16_t g_epd_ack_ok, g_epd_ack_crc, g_epd_ack_param, g_epd_ack_noinit;
+          extern volatile uint16_t g_epd_status_total, g_epd_status_recv;
+          g_epd_bw.assign(15000, 0xFF);  // 默认全白(透明); 渲染直接复用此缓冲, 不额外分配
+          g_epd_red.assign(15000, 0xFF);  // RED层此驱动反色: bit=1=无红(透明), bit=0=红
+          // 注册 notify: 接收设备每块的 ACK/NACK (0xA0)
+          auto *clt = id(epd);
+          clt->register_for_notify(id(g_epd_ch_handle));
+          g_epd_ack_ok = g_epd_ack_crc = g_epd_ack_param = g_epd_ack_noinit = 0;
+          g_epd_push_running = true;
+          BaseType_t tret = xTaskCreatePinnedToCore([](void *arg) {
+            ESP_LOGI("epd", "=== epd_push task started ===");
+            auto *clt = id(epd);
+            auto gwrite = [&](const uint8_t *d, uint16_t n) -> esp_err_t {
+              return esp_ble_gattc_write_char(clt->get_gattc_if(), clt->get_conn_id(),
+                                              id(g_epd_ch_handle), n, (uint8_t *) d,
+                                              ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
+            };
+            auto gwrite_nr = [&](const uint8_t *d, uint16_t n) -> esp_err_t {
+              return esp_ble_gattc_write_char(clt->get_gattc_if(), clt->get_conn_id(),
+                                              id(g_epd_ch_handle), n, (uint8_t *) d,
+                                              ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+            };
+            auto crc16 = [](const uint8_t *d, size_t n) -> uint16_t {
+              uint16_t crc = 0xFFFF;
+              for (size_t i = 0; i < n; i++) {
+                crc ^= d[i];
+                for (int j = 0; j < 8; j++) {
+                  crc = (crc & 1) ? (crc >> 1) ^ 0x8408 : crc >> 1;
+                }
+              }
+              return crc;
+            };
+            const size_t chunk = 233;  // 包=241=MTU-3, 单包直写不触发Write Long拆分(244会超限3字节导致SoftDevice重组丢块)
+
+            // === 渲染墨水屏版主页 (400x300): BW 0x00=黑 / RED 0x00=红 (驱动反色) ===
+            // 复用 g_epd_bw/red 全局缓冲, 零额外分配(开机堆紧张时避免崩溃)
+            class EpdCanvas : public esphome::display::DisplayBuffer {
+             public:
+              uint8_t *bw, *red;
+              EpdCanvas(uint8_t *bw_, uint8_t *red_) : bw(bw_), red(red_) {
+                memset(bw, 0xFF, 15000);
+                memset(red, 0xFF, 15000);
+              }
+              int get_width_internal() override { return 400; }
+              int get_height_internal() override { return 300; }
+              esphome::display::DisplayType get_display_type() override { return esphome::display::DISPLAY_TYPE_COLOR; }
+              void update() override {}  // 离屏画布无需刷新
+              void draw_absolute_pixel_internal(int x, int y, esphome::Color color) override {
+                if (x < 0 || x >= 400 || y < 0 || y >= 300) return;
+                int idx = y * 50 + (x >> 3);
+                uint8_t m = (uint8_t) (0x80 >> (x & 7));
+                uint8_t r = color.r, g = color.g, b = color.b;
+                if (r > 150 && g < 110 && b < 110) red[idx] &= (uint8_t) ~m;          // 偏红 -> RED 红(0x00)
+                else if ((((uint16_t) r + g + b) / 3) < 128) bw[idx] &= (uint8_t) ~m;  // 偏暗 -> BW 黑(0x00)
+              }
+            };
+            EpdCanvas cv(g_epd_bw.data(), g_epd_red.data());
+            auto col_blk = esphome::Color(0, 0, 0);
+            auto col_red = esphome::Color(220, 40, 40);
+            auto epd_now = id(my_time).now();
+            // === 面板主页 1:1 复刻到墨水屏 (400x300): 顶栏/时钟+天气/问候/六卡 ===
+            // 1. 顶栏: 家庭名(红) 左 + 时间(黑)+星期 右 (日期已下移到大字区)
+            {
+              std::string hn = id(home_name_text).state;
+              if (hn.empty()) hn = "温馨之家";
+              cv.printf(13, 3, id(font_cn_20), col_red, esphome::display::TextAlign::TOP_LEFT, "%s", hn.c_str());
+              static const char *wk[] = {"日", "一", "二", "三", "四", "五", "六"};
+              int dow = (epd_now.is_valid() && epd_now.day_of_week >= 1 && epd_now.day_of_week <= 7) ? epd_now.day_of_week - 1 : 0;
+              char tbuf[32];
+              snprintf(tbuf, sizeof(tbuf), "%02d:%02d 星期%s", epd_now.hour, epd_now.minute, wk[dow]);
+              cv.printf(387, 3, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_RIGHT, "%s", tbuf);
+              cv.horizontal_line(13, 34, 374, col_blk);
+            }
+            // 2. 日期区: 大字日期(黑) + 天气图标(红, mdi_80 同面板) + 城市/天气/温度列 —— 仅首页绘制, 家庭方案跳过省空间
+            if (id(g_epd_source) != "family") {
+            {
+              char dbuf[32];
+              snprintf(dbuf, sizeof(dbuf), "%d月%d日", epd_now.month, epd_now.day_of_month);
+              cv.printf(12, 44, id(font_date_48), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", dbuf);
+              auto icon_of = [](int code, bool night) -> const char * {
+                switch (code) {
+                  case 0: return night ? "󰖔" : "󰖙";
+                  case 1: case 2: return "󰖕";
+                  case 3: return "󰖐";
+                  case 45: case 48: return "󰖑";
+                  case 51: case 53: case 55: case 61: case 63: case 65: case 66: case 67:
+                  case 80: case 81: case 82: return "󰖗";
+                  case 71: case 73: case 75: case 77: case 85: case 86: return "󰖘";
+                  case 95: case 96: case 99: return "󰖓";
+                  default: return night ? "󰖔" : "󰖕";
+                }
+              };
+              bool night = epd_now.is_valid() && !(epd_now.hour >= 6 && epd_now.hour < 18);
+              // 图标靠左紧贴日期, 城市/天气/温度竖排在图标右侧(与面板一致)
+              cv.printf(230, 36, id(font_mdi_80), col_red, esphome::display::TextAlign::TOP_LEFT, "%s",
+                        icon_of(id(g_weather_code), night));
+              std::string city = id(city_text).state;   // 天气城市(HA text 实体可改)
+              if (city.empty()) city = "本地";
+              cv.printf(318, 36, id(font_cn_20), col_red, esphome::display::TextAlign::TOP_LEFT, "%s", city.c_str());
+              cv.printf(318, 62, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s",
+                        id(g_weather).c_str());
+              char tbuf2[24];
+              if (std::isnan(id(g_weather_temp))) snprintf(tbuf2, sizeof(tbuf2), "--");
+              else snprintf(tbuf2, sizeof(tbuf2), "%.0f°C", id(g_weather_temp));
+              cv.printf(318, 88, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", tbuf2);
+            }
+            }
+            // 3. 主体: home=问候+六卡 / family=家庭信息三卡 (顶栏共享; 日期天气仅首页)
+            if (id(g_epd_source) != "family") {
+            // 3. 问候语(红, 面板青0x00D4FF, 居中)
+            {
+              std::string q = id(home_quote).state;
+              if (!q.empty()) cv.printf(200, 128, id(font_cn_20), col_red, esphome::display::TextAlign::TOP_CENTER, "%s", q.c_str());
+            }
+            // 4. 六卡信息区 (3列x2行, 与面板一致: 系统/温度/湿度/空气/水质/电费)
+            {
+              float t = id(ha_temp).state, h = id(ha_hum).state, a = id(ha_air).state, w = id(ha_water).state, e = id(ha_elec).state;
+              char v0[24], v1[24], v2[24], v3[24], v4[24], v5[24];
+              float c1 = id(ha_card1).state;  // 卡1 自定义实体 (待取快递数)
+              if (!std::isfinite(c1)) snprintf(v0, sizeof(v0), "--");
+              else if (c1 <= 0) snprintf(v0, sizeof(v0), "无快递");
+              else snprintf(v0, sizeof(v0), "%d个快递待取", (int) c1);
+              if (!std::isfinite(t)) snprintf(v1, sizeof(v1), "--");
+              else snprintf(v1, sizeof(v1), "%.1f℃", t);
+              if (!std::isfinite(h)) snprintf(v2, sizeof(v2), "--");
+              else snprintf(v2, sizeof(v2), "%.0f %s", h, h < 40 ? "干燥" : (h < 60 ? "舒适" : (h < 80 ? "偏高" : "过高")));
+              if (!std::isfinite(a)) snprintf(v3, sizeof(v3), "--");
+              else snprintf(v3, sizeof(v3), "%.0f %s", a, a < 35 ? "优" : (a < 75 ? "良" : (a < 115 ? "轻度" : (a < 150 ? "中度" : (a < 250 ? "重度" : "严重")))));
+              if (!std::isfinite(w)) snprintf(v4, sizeof(v4), "--");
+              else snprintf(v4, sizeof(v4), "%.0f %s", w, w < 50 ? "纯净" : (w < 150 ? "优质" : (w < 300 ? "良好" : (w < 450 ? "一般" : "较差"))));
+              if (!std::isfinite(e)) snprintf(v5, sizeof(v5), "--");
+              else snprintf(v5, sizeof(v5), "¥%.1f", e);
+              bool elec_red = std::isfinite(e) && e < 30.0f;
+              std::string c1t = id(card1_title_text).state;  // 卡1 标题(HA text 实体可改)
+              if (c1t.empty()) c1t = "系统";
+              struct CardT { const char *icon; const char *title; const char *val; bool redv; };
+              CardT cards[6] = {
+                  {"󰋜", c1t.c_str(), v0, false},
+                  {"󰔏", "温度", v1, false},
+                  {"󰖎", "湿度", v2, false},
+                  {"󰵃", "空气质量", v3, false},
+                  {"󰖌", "水质", v4, false},
+                  {"󰞺", "电费余额", v5, elec_red},
+              };
+              for (int i = 0; i < 6; i++) {
+                int col = i % 3, row = i / 3;
+                int x = 11 + col * 130, y = 162 + row * 66;
+                cv.rectangle(x, y, 124, 60, col_blk);
+                cv.printf(x + 2, y + 2, id(font_mdi_24), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", cards[i].icon);
+                cv.printf(x + 30, y + 2, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", cards[i].title);
+                cv.printf(x + 62, y + 30, id(font_cn_20), cards[i].redv ? col_red : col_blk,
+                          esphome::display::TextAlign::TOP_CENTER, "%s", cards[i].val);
+              }
+            }
+            } else {
+              // ===== 家庭信息三卡 (顶栏/日期天气已在上方共享) =====
+              auto pick_line = [](const std::string& src, int idx) -> std::string {
+                std::string cur; int n = 0;
+                for (size_t i = 0; i <= src.size(); i++) {
+                  if (i == src.size() || src[i] == '\n') {
+                    size_t a = 0, b = cur.size();
+                    while (a < b && (cur[a]==' '||cur[a]=='\t')) a++;
+                    while (b > a && (cur[b-1]==' '||cur[b-1]=='\t')) b--;
+                    std::string t = cur.substr(a, b - a);
+                    if (!t.empty()) { if (n == idx) return t; n++; }
+                    cur.clear();
+                  } else cur += src[i];
+                }
+                return std::string("");
+              };
+              // 顶栏线下方复用首页面板问候语(留空不显示)
+              {
+                std::string note = id(home_quote).state;
+                if (!note.empty())
+                  cv.printf(13, 37, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", note.c_str());
+              }
+              // 卡1: 问候/到家时长(首行) + 有雨/无雨
+              {
+                std::string line1 = pick_line(id(ha_family_presence).state, 0);
+                int wc = id(g_weather_code);
+                if (wc >= 0) {
+                  bool rain = (wc==51||wc==53||wc==55||wc==61||wc==63||wc==65||wc==66||wc==67
+                            ||wc==80||wc==81||wc==82||wc==95||wc==96||wc==99);
+                  line1 += rain ? ".今天有雨" : ".今天无雨";
+                }
+                if (line1.empty()) line1 = "等待 Home Assistant 数据...";
+                cv.printf(13, 62, id(font_cn_20), col_red, esphome::display::TextAlign::TOP_LEFT, "%s", line1.c_str());
+              }
+              // 房间有人/无人: 有人红, 无人黑
+              {
+                struct Rm { const char *name; std::string st; int x; };
+                Rm rms[4] = {
+                  {"客厅", id(ha_room_living).state, 13},
+                  {"主卧", id(ha_room_master).state, 112},
+                  {"次卫", id(ha_room_bath2).state, 212},
+                  {"主卫", id(ha_room_bath1).state, 312},
+                };
+                for (int i = 0; i < 4; i++) {
+                  bool here = rms[i].st == "有人";
+                  cv.printf(rms[i].x, 92, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", rms[i].name);
+                  cv.printf(rms[i].x + 42, 92, id(font_cn_20), here ? col_red : col_blk,
+                            esphome::display::TextAlign::TOP_LEFT, "%s", rms[i].st.c_str());
+                }
+                cv.horizontal_line(13, 127, 374, col_blk);
+              }
+              // 卡2: 室内/阳台/温差 + 电脑/NAS/3D功率
+              {
+                float tin = parse_number<float>(id(ha_temp_in).state).value_or(NAN);
+                float tbf = parse_number<float>(id(ha_temp_bal).state).value_or(NAN);
+                float tbc = std::isfinite(tbf) ? (tbf - 32) * 5.0f / 9.0f : NAN;
+                char b1[24], b2[24], b3[24];
+                if (!std::isfinite(tin)) snprintf(b1, sizeof(b1), "室内 --");
+                else snprintf(b1, sizeof(b1), "室内 %.1f℃", tin);
+                if (!std::isfinite(tbc)) snprintf(b2, sizeof(b2), "阳台 --");
+                else snprintf(b2, sizeof(b2), "阳台 %.1f℃", tbc);
+                if (!std::isfinite(tin) || !std::isfinite(tbc)) snprintf(b3, sizeof(b3), "温差 --");
+                else snprintf(b3, sizeof(b3), "温差 %.1f℃", std::fabs(tin - tbc));
+                cv.printf(13, 137, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", b1);
+                cv.printf(150, 137, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", b2);
+                cv.printf(290, 137, id(font_cn_20), col_blk, esphome::display::TextAlign::TOP_LEFT, "%s", b3);
+                float pc = parse_number<float>(id(ha_pc).state).value_or(NAN);
+                float nas = parse_number<float>(id(ha_nas).state).value_or(NAN);
+                float p3 = parse_number<float>(id(ha_p3d).state).value_or(NAN);
+                char p1[24], p2[24], p3s[24];
+                if (!std::isfinite(pc)) snprintf(p1, sizeof(p1), "电脑 --"); else snprintf(p1, sizeof(p1), "电脑 %.0fW", pc);
+                if (!std::isfinite(nas)) snprintf(p2, sizeof(p2), "NAS --"); else snprintf(p2, sizeof(p2), "NAS %.0fW", nas);
+                if (!std::isfinite(p3)) snprintf(p3s, sizeof(p3s), "3D --"); else snprintf(p3s, sizeof(p3s), "3D %.0fW", p3);
+                cv.printf(13, 171, id(font_cn_20), col_red, esphome::display::TextAlign::TOP_LEFT, "%s", p1);
+                cv.printf(150, 171, id(font_cn_20), col_red, esphome::display::TextAlign::TOP_LEFT, "%s", p2);
+                cv.printf(290, 171, id(font_cn_20), col_red, esphome::display::TextAlign::TOP_LEFT, "%s", p3s);
+                cv.horizontal_line(13, 203, 374, col_blk);
+              }
+              // 卡3: 电费/服务器三行
+              {
+                std::string bs = id(ha_family_bill).state;
+                for (int k = 0; k < 3; k++) {
+                  std::string ln = pick_line(bs, k);
+                  if (ln.empty()) ln = "--";
+                  cv.printf(13, 213 + k * 28, id(font_cn_20), (k == 0 ? col_red : col_blk), esphome::display::TextAlign::TOP_LEFT, "%s", ln.c_str());
+                }
+              }
+            }
+            // 渲染直接写入 g_epd_bw/red, 无需再 move
+            ESP_LOGI("epd", "=== e-ink rendered (source=%s) ===", id(g_epd_source).c_str());
+
+            // 写单个块. use_response=true 用 RSP(批次末/整体末做流控确认), 其余 NO_RSP(官方方式)
+            auto write_block = [&](std::vector<uint8_t> &data, uint8_t layer, size_t b, size_t total, bool use_response) -> bool {
+              size_t off = b * chunk;
+              size_t len = std::min(chunk, data.size() - off);
+              uint8_t cfg = (b == 0) ? (layer & 0x0F) : (0xF0 | (layer & 0x0F));
+              std::vector<uint8_t> pkt;
+              pkt.push_back(0x31);
+              pkt.push_back(b & 0xFF); pkt.push_back((b >> 8) & 0xFF);
+              pkt.push_back(total & 0xFF); pkt.push_back((total >> 8) & 0xFF);
+              pkt.push_back(cfg);
+              pkt.insert(pkt.end(), data.begin() + off, data.begin() + off + len);
+              uint16_t crc = crc16(data.data() + off, len);
+              pkt.push_back(crc & 0xFF); pkt.push_back(crc >> 8);
+              esp_err_t werr = ESP_OK;
+              for (int attempt = 0; attempt < 3; attempt++) {
+                if (use_response) werr = gwrite(pkt.data(), (uint16_t) pkt.size());
+                else werr = gwrite_nr(pkt.data(), (uint16_t) pkt.size());
+                if (werr == ESP_OK) break;
+                ESP_LOGE("epd", "block %d write FAILED (len=%d, err=%d) retry %d", b, len, werr, attempt + 1);
+                delay(20);
+              }
+              return werr == ESP_OK;
+            };
+
+            // 查缺失块: QUERY_STATUS(0x32) -> 设备回 A1 [bitmap...]; 位图未收到时重试, 仍无则保守返回全部缺失
+            extern std::vector<uint8_t> g_epd_status_bitmap;
+            auto query_missing = [&](size_t total) -> std::vector<size_t> {
+              std::vector<size_t> missing;
+              for (int q = 0; q < 3; q++) {
+                uint8_t qs = 0x32;
+                gwrite(&qs, 1);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                if (!g_epd_status_bitmap.empty()) break;
+                ESP_LOGI("epd", "A1 not received, query retry %d", q + 1);
+              }
+              if (g_epd_status_bitmap.empty()) {
+                ESP_LOGI("epd", "A1 still empty, conservative: resend ALL blocks");
+                for (size_t b = 0; b < total; b++) missing.push_back(b);
+                return missing;
+              }
+              for (size_t b = 0; b < total; b++) {
+                if (b / 8 < g_epd_status_bitmap.size() && !(g_epd_status_bitmap[b / 8] & (1 << (b % 8))))
+                  missing.push_back(b);
+              }
+              return missing;
+            };
+
+            // 整层推送 + recv计数确认 (NO_RSP + 批次末RSP流控 + A1 recv权威确认, 最多3轮整层重传)
+            auto send_layer = [&](std::vector<uint8_t> &data, uint8_t layer) -> bool {
+              auto push_full = [&](uint8_t session) -> bool {
+                uint8_t rst[2] = {0x33, session};                      // RESET_TRANSFER
+                gwrite(rst, 2);
+                delay(200);
+                size_t total = (data.size() + chunk - 1) / chunk;
+                for (size_t b = 0; b < total; b++) {
+                  {
+                    char stbuf[40];
+                    snprintf(stbuf, sizeof(stbuf), "%s层 块%d/%d", (layer == 0x0F) ? "BW" : "RED", b + 1, total);
+                    id(g_epd_status) = std::string(stbuf);
+                  }
+                  bool last_in_batch = ((b + 1) % 20 == 0) || (b == total - 1);
+                  if (!write_block(data, layer, b, total, last_in_batch)) {
+                    id(g_epd_status) = "块写入失败";
+                    return false;
+                  }
+                  delay(b >= 40 ? 100 : 50);  // 尾部块更慢: 设备 SPI 缓冲越往后越满
+                  if ((b + 1) % 20 == 0) {
+                    ESP_LOGI("epd", "batch pause after block %d", b + 1);
+                    // 尾部批次暂停加倍: 设备 SPI 写 RAM 累积延迟, 越往后缓冲越满
+                    delay((b + 1) >= 40 ? 1500 : 700);
+                  }
+                }
+                return true;
+              };
+              // 查询设备已收块数: 设备 SPI 写 RAM 忙, 等 800ms + 重试5次; 失败也不阻塞(宽容放行)
+              auto query_recv = [&](uint16_t &recv_out) -> bool {
+                for (int t = 0; t < 5; t++) {
+                  g_epd_status_recv = 0;
+                  uint8_t q = 0x32;                        // QUERY_STATUS
+                  gwrite(&q, 1);
+                  delay(800);
+                  if (g_epd_status_recv > 0) {
+                    recv_out = g_epd_status_recv;
+                    return true;
+                  }
+                }
+                return false;
+              };
+              size_t total = (data.size() + chunk - 1) / chunk;
+              if (!push_full(0x42)) return false;
+              delay(1500);  // 传输结束等设备缓冲/SPI 清空(设备写RAM慢)
+              uint16_t recv = 0;
+              for (int round = 0; round < 5; round++) {
+                if (!query_recv(recv)) {
+                  // A1 查询失败: 设备可能仍忙, 不阻塞主流程, 直接宽容放行(先跑通 REFRESH 看效果)
+                  id(g_epd_status) = "A1忙 宽容放行";
+                  ESP_LOGW("epd", "layer %02X A1 query failed, tolerate & continue", layer);
+                  return true;
+                }
+                {
+                  char stbuf[40];
+                  snprintf(stbuf, sizeof(stbuf), "%s层收%d/%d", (layer == 0x0F) ? "BW" : "RED", recv, (int) total);
+                  id(g_epd_status) = std::string(stbuf);
+                }
+                ESP_LOGI("epd", "layer %02X A1 recv=%d/%d", layer, recv, (int) total);
+                if (recv >= total) {
+                  ESP_LOGI("epd", "layer %02X confirmed %d/%d", layer, recv, (int) total);
+                  return true;
+                }
+                ESP_LOGI("epd", "layer %02X round %d: recv %d < %d -> full resend", layer, round + 1, recv, (int) total);
+                if (!push_full(0x42 + round + 1)) return false;
+                delay(400);
+              }
+              // 宽容放行: 整层重传覆盖写入, RAM 大概率已全; 状态行显示最终 recv, 继续下一层并 REFRESH
+              {
+                char stbuf[48];
+                snprintf(stbuf, sizeof(stbuf), "%s层最终%d/%d 继续", (layer == 0x0F) ? "BW" : "RED", recv, (int) total);
+                id(g_epd_status) = std::string(stbuf);
+              }
+              ESP_LOGW("epd", "layer %02X give-up-tolerant recv=%d/%d", layer, recv, (int) total);
+              return true;
+            };
+
+            uint8_t init_cmd = 0x01;                        // INIT
+            esp_err_t init_ret = gwrite(&init_cmd, 1);
+            ESP_LOGI("epd", "INIT write ret=0x%x", init_ret);
+            if (init_ret != ESP_OK) {
+              id(g_epd_status) = "INIT写失败";
+            } else {
+              delay(200);
+              if (send_layer(g_epd_bw, 0x0F)) {              // 黑白层
+                delay(300);
+                if (send_layer(g_epd_red, 0x00)) {           // 红色层
+                  delay(500);
+                  // REFRESH 用无响应写: 不等设备 ACK(墨水屏刷新时 nRF5 全忙不响应)
+                  uint8_t rf_cmd = 0x05;                        // REFRESH
+                  esp_ble_gattc_write_char(clt->get_gattc_if(), clt->get_conn_id(),
+                                           id(g_epd_ch_handle), 1, &rf_cmd,
+                                           ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+                  ESP_LOGI("epd", "=== EPD REFRESH sent ===");
+                  id(g_epd_status) = "REFRESH已发送，等待墨水屏刷新";
+                }
+              }
+            }
+            // 等主循环处理完 notify 队列后显示 ACK 统计
+            vTaskDelay(pdMS_TO_TICKS(800));
+            {
+              extern volatile uint16_t g_epd_ack_ok, g_epd_ack_crc, g_epd_ack_param, g_epd_ack_noinit;
+              char stbuf[80];
+              snprintf(stbuf, sizeof(stbuf), "ACK OK=%d CRC=%d PARAM=%d NI=%d",
+                       g_epd_ack_ok, g_epd_ack_crc, g_epd_ack_param, g_epd_ack_noinit);
+              id(g_epd_status) = std::string(stbuf);
+              ESP_LOGI("epd", "%s", stbuf);
+            }
+            // 推送完毕: 关闭自动重连并主动断开 BLE(墨水屏不常连); 下次到点由调度重新打开 auto_connect 自动连
+            id(epd).set_auto_connect(false);
+            id(epd).disconnect();
+            id(g_epd_status) = "推送完成，已断开连接";
+            g_epd_push_running = false;
+            vTaskDelete(NULL);
+          }, "epd_push", 16384, NULL, 1, NULL, 1);
+
+
+          if (tret == pdPASS) {
+            id(g_epd_status) = "任务已创建";
+          } else {
+            id(g_epd_status) = "任务创建失败";
+            g_epd_push_running = false;  // 失败释放互斥锁, 允许重试
+          }
+          return;
+  # 步骤1: 城市名 -> open-meteo 地理编码 -> 经纬度; 成功后再执行 fetch_weather
+  - id: fetch_geo
+    mode: restart
+    then:
+      - http_request.get:
+          url: !lambda |-
+              std::string city = id(city_text).state;
+              if (city.empty()) city = "北京";
+              // 百分号编码中文等非 ASCII 字节 (open-meteo 接受 UTF-8 字节编码)
+              std::string enc;
+              for (unsigned char ch : city) {
+                if (ch < 128 && (isalnum(ch) || ch == '-' || ch == '_' || ch == '.')) enc += (char)ch;
+                else { char h[4]; snprintf(h, sizeof(h), "%%%02X", ch); enc += h; }
+              }
+              std::string u = "https://geocoding-api.open-meteo.com/v1/search?name=" + enc + "&count=1&language=zh";
+              ESP_LOGI("geo", "GET %s", u.c_str());
+              return u;
+          capture_response: true
+          max_response_buffer_size: 4kB
+          on_response:
+            then:
+              - lambda: |-
+                  if (!response || response->status_code != 200 || body.empty()) {
+                    ESP_LOGW("geo", "geocode http %d", response ? response->status_code : -1);
+                    return;   // 坐标保持 NAN, fetch_weather 回退默认坐标
+                  }
+                  auto r = body.find("\"latitude\":");
+                  auto l = body.find("\"longitude\":");
+                  if (r == std::string::npos || l == std::string::npos) {
+                    ESP_LOGW("geo", "no geocode result for city");
+                    id(g_geo_lat) = NAN; id(g_geo_lon) = NAN;
+                    return;
+                  }
+                  id(g_geo_lat) = atof(body.c_str() + r + 11);
+                  id(g_geo_lon) = atof(body.c_str() + l + 12);
+                  ESP_LOGI("geo", "lat=%.4f lon=%.4f", id(g_geo_lat), id(g_geo_lon));
+              - script.execute: fetch_weather
+
+  # 步骤2: 按当前经纬度拉实时天气 (地理编码失败时回退默北京坐标)
+  - id: fetch_weather
+    mode: restart
+    then:
+      - http_request.get:
+          url: !lambda |-
+              double lat = std::isnan(id(g_geo_lat)) ? 30.05 : id(g_geo_lat);
+              double lon = std::isnan(id(g_geo_lon)) ? 103.83 : id(g_geo_lon);
+              char u[256];
+              snprintf(u, sizeof(u),
+                "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,weather_code",
+                lat, lon);
+              return std::string(u);
+          capture_response: true
+          on_response:
+            then:
+              - lambda: |-
+                  if (!response || response->status_code != 200 || body.empty()) return;
+                  // body = on_response 响应体 (std::string&)
+                  auto wmo = [](int c) -> std::string {
+                    switch (c) {
+                      case 0: return "晴";
+                      case 1: case 2: return "多云";
+                      case 3: return "阴";
+                      case 45: case 48: return "雾";
+                      case 51: case 53: case 55: return "毛毛雨";
+                      case 61: case 63: case 65: return "雨";
+                      case 66: case 67: return "冻雨";
+                      case 71: case 73: case 75: return "雪";
+                      case 77: return "雪粒";
+                      case 80: case 81: case 82: return "阵雨";
+                      case 85: case 86: return "阵雪";
+                      case 95: return "雷暴";
+                      case 96: case 99: return "雷暴冰雹";
+                      default: return "多云";
+                    }
+                  };
+                  // 从 "current":{ 起解析, 避开 current_units 里的同名键
+                  auto cur = body.find("\"current\":{");
+                  if (cur == std::string::npos) return;
+                  auto p1 = body.find("\"weather_code\":", cur);
+                  if (p1 != std::string::npos) {
+                    int code = atoi(body.c_str() + p1 + 15);
+                    id(g_weather) = wmo(code);
+                    id(g_weather_code) = code;
+                  }
+                  auto p2 = body.find("\"temperature_2m\":", cur);
+                  if (p2 != std::string::npos) {
+                    id(g_weather_temp) = atof(body.c_str() + p2 + 17);
+                  }
+                  auto p3 = body.find("\"relative_humidity_2m\":", cur);
+                  if (p3 != std::string::npos) {
+                    id(g_weather_hum) = atof(body.c_str() + p3 + 23);
+                  }
+              - lvgl.widget.refresh: [lbl_weather_temp, lbl_weather, lbl_weather_desc, lbl_family_presence]
+
+  # HA Logbook 最近活动: 直读内网 /api/logbook, 取最新3条 (地址/令牌在面板网页或HA里改, 存NVS, 免刷机)
+  - id: fetch_logbook
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // 临时停用 logbook 大响应拉取(本机偶发自动重启), 待本卡片改作其他内容后再恢复或替换
+              return false;
+          then:
+            - http_request.get:
+                url: !lambda |-
+                    // 归一 host: 去协议前缀, 只保留 host:port, 丢弃误填的路径段(如 /api/logbook/now)和空白
+                    // 清洗 host: 去空格/换行/控制字符, 去协议前缀, 只留 host:port 丢弃误填路径
+                    std::string rawh = id(ha_host_text).state;
+                    std::string h;
+                    for (char c : rawh) if ((unsigned char) c >= 0x21) h += c;
+                    if (h.rfind("http://", 0) == 0) h = h.substr(7);
+                    else if (h.rfind("https://", 0) == 0) h = h.substr(8);
+                    auto sl = h.find('/');
+                    if (sl != std::string::npos) h = h.substr(0, sl);
+                    // 路径式 /api/logbook/<start> 取最近10分钟(~30KB), 配合48KB捕获缓冲, 避免大块预分配崩堆
+                    std::string url = "http://" + h + "/api/logbook";
+                    auto et = id(my_time).utcnow();
+                    if (et.is_valid()) {
+                      time_t tt = et.timestamp - 600;
+                      struct tm tmv;
+                      gmtime_r(&tt, &tmv);
+                      char tb[32];
+                      strftime(tb, sizeof(tb), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+                      url += std::string("/") + tb;
+                    }
+                    id(g_ha_url) = url;
+                    ESP_LOGI("lb", "GET %s", url.c_str());
+                    return url;
+                request_headers:
+                  Authorization: !lambda |-
+                      // 清洗 token: 去空格/换行/控制字符(JWT 不含空白, 否则 aiohttp 报 BadHttpMessage 400); 再把误大写 EyJ 归一回 eyJ
+                      // 头值必须存持久全局串再返回 c_str(), 临时串析构后组件延迟读取会拿到堆乱码
+                      std::string raw = id(ha_token_text).state;
+                      std::string t;
+                      for (char c : raw) if ((unsigned char) c >= 0x21) t += c;
+                      if (t.size() >= 3 && t[0] == 'E' && t[1] == 'y' && t[2] == 'J') t[0] = 'e';
+                      id(g_auth_header) = "Bearer " + t;
+                      return id(g_auth_header).c_str();
+                capture_response: true
+                # 默认捕获缓冲仅1kB会截断logbook; 整块预分配不可过大(128KB会堆崩溃重启循环), 48KB配合10min窗(30KB)安全
+                max_response_buffer_size: 48kB
+                on_response:
+                  then:
+                    - lambda: |-
+                        // logbook 数组: [{name,message,entity_id,state,when},...] 手写提取(零依赖)
+                        id(g_family_activity).clear();
+                        ESP_LOGI("lb", "resp code=%d body=%u", response ? response->status_code : -1, (unsigned)body.size());
+                        if (!response || response->status_code != 200 || body.empty()) {
+                          int code = response ? response->status_code : -1;
+                          std::string u = id(g_ha_url);
+                          if (u.length() > 48) u = u.substr(u.length() - 48);
+                          char fb[160];
+                          snprintf(fb, sizeof(fb), "HTTP%d ...%s", code, u.c_str());
+                          id(g_family_activity) = fb;
+                          return;
+                        }
+                        std::vector<std::string> rows;
+                        size_t pos = 0;
+                        char line[192];
+                        auto gj = [](const std::string& o, const char* key) -> std::string {
+                          std::string k = std::string("\"") + key + "\":\"";
+                          auto p = o.find(k);
+                          if (p == std::string::npos) return "";
+                          p += k.size();
+                          auto e = o.find('"', p);
+                          return e == std::string::npos ? "" : o.substr(p, e - p);
+                        };
+                        while (true) {
+                          size_t ob = body.find('{', pos);
+                          if (ob == std::string::npos) break;
+                          // 花括号深度配对, 避免被 attributes 等嵌套对象的第一个 } 提前截断
+                          int depth = 0; size_t cb = std::string::npos;
+                          for (size_t i = ob; i < body.size(); i++) {
+                            if (body[i] == '{') depth++;
+                            else if (body[i] == '}') { depth--; if (depth == 0) { cb = i; break; } }
+                          }
+                          if (cb == std::string::npos) break;
+                          std::string obj = body.substr(ob, cb - ob + 1);
+                          pos = cb + 1;
+                          std::string name = gj(obj, "name");
+                          std::string msg = gj(obj, "message");
+                          std::string when = gj(obj, "when");
+                          // 跳过面板自身配置/状态变更噪声
+                          if (name.rfind("ESP32智能控制面板", 0) == 0) continue;
+                          // 兜底: name 缺失用 entity_id 点后段
+                          if (name.empty()) {
+                            std::string eid = gj(obj, "entity_id");
+                            auto dot = eid.rfind('.');
+                            name = dot == std::string::npos ? eid : eid.substr(dot + 1);
+                          }
+                          // 跳过自动化定时触发噪声 "triggered by time"
+                          {
+                            std::string ml;
+                            for (char c : msg) ml += (char) tolower((unsigned char) c);
+                            if (ml.find("triggered by") != std::string::npos) continue;
+                          }
+                          // 动作文案: 优先 message; 无 message 时仅保留 on/off 开关, 数值/时间戳/unknown/unavailable 跳过
+                          std::string action = msg;
+                          if (action.empty()) {
+                            std::string st = gj(obj, "state");
+                            if (st == "on") action = "已打开";
+                            else if (st == "off") action = "已关闭";
+                            else continue;
+                          }
+                          if (name.empty()) continue;
+                          std::string hm = when.length() >= 16 ? when.substr(11, 5) : "--:--";
+                          const char* col = "E8EDF2";
+                          if (action.find("开")!=std::string::npos || action.find("on")!=std::string::npos || action.find("有")!=std::string::npos || action.find("检测")!=std::string::npos || action.find("开始")!=std::string::npos || action.find("回家")!=std::string::npos || action.find("清扫")!=std::string::npos) col="FF6B6B";
+                          else if (action.find("关")!=std::string::npos || action.find("off")!=std::string::npos || action.find("无")!=std::string::npos || action.find("离开")!=std::string::npos || action.find("停止")!=std::string::npos) col="52D981";
+                          snprintf(line, sizeof(line), "%s #%s%s# %s", hm.c_str(), col, name.c_str(), action.c_str());
+                          rows.push_back(line);
+                        }
+                        // logbook 正序, 最新在末尾, 取最后6条(容器内可滚动查看)
+                        int n = (int)rows.size();
+                        id(g_family_activity).clear();
+                        int start = n > 6 ? n - 6 : 0;
+                        for (int i = start; i < n; i++) {
+                          if (i > start) id(g_family_activity) += "\n";
+                          id(g_family_activity) += rows[i];
+                        }
+                        if (n == 0) id(g_family_activity) = "暂无近期活动";
+                    - lvgl.widget.refresh: lbl_bill_l1
+                on_error:
+                  then:
+                    - lambda: |-
+                        std::string u = id(g_ha_url);
+                        if (u.length() > 46) u = u.substr(u.length() - 46);
+                        char fb[150];
+                        snprintf(fb, sizeof(fb), "失败 ...%s", u.c_str());
+                        id(g_family_activity) = fb;
+                    - lvgl.widget.refresh: lbl_bill_l1
+          else:
+            - lambda: |-
+                id(g_family_activity) = "本卡片内容待更换";
+            - lvgl.widget.refresh: lbl_bill_l1
+
+  # ESP32 Monitor 全家桶状态拉取 (http://<你的monitor IP>/api/text 直接返回6行预格式化文本)
+  - id: fetch_monitor
+    mode: restart
+    then:
+      - http_request.get:
+          url: "${monitor_url}"
+          capture_response: true
+          max_response_buffer_size: 2kB
+          on_response:
+            then:
+              - lambda: |-
+                  if (!response || response->status_code != 200 || body.empty()) return;
+                  std::string b = body;
+                  // 按换行拆成6行
+                  std::string rows[6];
+                  int ri = 0;
+                  size_t pos = 0;
+                  while (ri < 6 && pos < b.size()) {
+                    size_t nl = b.find('\n', pos);
+                    if (nl == std::string::npos) { rows[ri] = b.substr(pos); break; }
+                    rows[ri] = b.substr(pos, nl - pos);
+                    pos = nl + 1;
+                    ri++;
+                  }
+                  id(g_mon_row1) = rows[0];
+                  id(g_mon_row2) = rows[1];
+                  id(g_mon_row3) = rows[2];
+                  id(g_mon_row4) = rows[3];
+                  id(g_mon_row5) = rows[4];
+                  id(g_mon_row6) = rows[5];
+              - lvgl.widget.refresh: [mon_row1, mon_row2, mon_row3, mon_row4, mon_row5, mon_row6]
+
+# 每 5 秒刷新温湿度 / 扩展数据 / IP / 信号 label
+interval:
+  # 开机 2s 后按已存主题把六页背景图切到对应渐变(0深蓝/1深紫/2深粉), 只执行一次
+  - interval: 2s
+    then:
+      - lambda: |-
+          static bool bg_applied = false;
+          if (bg_applied) return;
+          bg_applied = true;
+          int t = atoi(id(bg_theme_text).state.c_str());
+          auto *src = id(bg_grad);
+          if (t == 1) src = id(bg_grad_light);
+          else if (t == 2) src = id(bg_grad_pink);
+          lv_image_set_src(id(bg_home), src);
+          lv_image_set_src(id(bg_light), src);
+          lv_image_set_src(id(bg_switch), src);
+          lv_image_set_src(id(bg_scene), src);
+          lv_image_set_src(id(bg_family), src);
+          lv_image_set_src(id(bg_set), src);
+      - lvgl.widget.refresh: [bg_theme_btn]
+  - interval: 5s
+    then:
+      - lvgl.widget.refresh: [lbl_temp, lbl_hum, lbl_air, lbl_water, lbl_elec, lbl_weather, lbl_weather_temp, lbl_ip, lbl_signal_set, lbl_home_name, lbl_weather_city, lbl_weather_desc, lbl_card1_title, lbl_family_presence, lbl_room_living, lbl_room_master, lbl_room_bath2, lbl_room_bath1, lbl_t_in, lbl_t_bal, lbl_t_diff, lbl_pc, lbl_nas, lbl_p3d, lbl_bill_l1, lbl_bill_l2, lbl_bill_l3, lbl_relay_icon, lbl_l2_icon, lbl_l3_icon, lbl_l4_icon, lbl_l5_icon, lbl_l6_icon, lbl_curtain_pct, lbl_wh_pwr_icon, lbl_wh_temp, lbl_wh_e_icon, lbl_wh_e_txt, lbl_wh_in, lbl_wh_out, lbl_wh_flame, lbl_ac_pwr_icon, lbl_ac_set, lbl_ac_cur, lbl_ac_m_cool, lbl_ac_m_heat, lbl_ac_m_dry, lbl_ac_m_off, lbl_mon_time]
+  # 墨水屏推送状态机: 开机 ${epd_first_delay_s}s 后推第一次, 之后按 text 实体设置的间隔(秒)循环推; 间隔=0 停推
+  # 推送完成后主动断开 BLE(墨水屏不常连), 到点未连接则自动重连
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(epd_push_interval_s) > 0 && (int32_t)(millis() - id(epd_next_push_at)) >= 0;
+          then:
+            - if:
+                condition:
+                  lambda: |-
+                    return id(epd_connected);
+                then:
+                  - lambda: |-
+                      id(epd_next_push_at) = (uint32_t)(millis() + id(epd_push_interval_s) * 1000);
+                  - script.execute: epd_push_test
+                else:
+                  - lambda: |-
+                      id(g_epd_reconnect_requested) = true;
+                      id(g_epd_status) = "墨水屏未连接，正在重连";
+                      id(epd_next_push_at) = (uint32_t)(millis() + 15000);   // 15s 后再检查
+                      // 打开自动重连: 由扫描器发现墨水屏后自动建立连接(手动 connect 失败会卡 CONNECTING 死锁)
+                      id(epd).set_auto_connect(true);
+                      ESP_LOGI("epd", "push due but EPD disconnected, enabling auto-connect");
+  # 自动熄屏: on_touch 刷新时间戳并唤醒; 这里只负责闲置到点降背光到6%
+  - interval: 1s
+    then:
+      - lambda: |-
+          uint32_t idle = millis() - id(g_last_touch_ms);
+          int to = id(g_screen_timeout_s);
+          if (to <= 0) {
+            id(g_asleep) = false;
+          } else if (!id(g_asleep) && idle >= (uint32_t)to * 1000u) {
+            id(g_asleep) = true;
+          }
+      - if:
+          condition:
+            lambda: 'return id(g_asleep);'
+          then:
+            - light.turn_on:
+                id: backlight
+                brightness: 0.06
+          else:
+            - light.turn_on:
+                id: backlight
+                brightness: !lambda 'return id(g_bright_norm);'
+  # 问候语自动轮播: ≤22字静止, 超出按每20字切段, 每3秒切下一段循环(避开连续平移重绘卡顿)
+  - interval: 3s
+    then:
+      - lambda: |-
+          std::string s = id(home_quote).state;
+          int total = 0;
+          for (size_t i = 0; i < s.size();) {
+            unsigned char c = (unsigned char)s[i];
+            total++;
+            i += (c >= 0x80) ? 3 : 1;
+          }
+          int segn = (total <= 22) ? 1 : ((total + 19) / 20);
+          id(g_greet_seg) = (id(g_greet_seg) + 1) % segn;
+      - lvgl.widget.refresh: lbl_greet
+  # 天气每 30 分钟: 先按城市名地理编码, 再拉实时温度+天气代码 (Open-Meteo 免 key)
+  - interval: 30min
+    then:
+      - script.execute: fetch_geo
+  # 家庭页最近活动每 60 秒拉取 (HA Logbook 内网直读)
+  - interval: 60s
+    then:
+      - script.execute: fetch_logbook
+  # 全家桶状态每 10 秒自动拉取(纯文本免解析, 进页面不立即拉避免崩溃)
+  - interval: 10s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(g_mon_active);'
+          then:
+            - script.execute: fetch_monitor
+
+# 墨水屏推送间隔已改为 text 实体 (epd_interval_text, HA 里直接输入分钟数), 见 text: 块
+# ---------------- 板级外设 ----------------
+# GT911 触摸 (I2C: SDA=IO19, SCL=IO45)
+i2c:
+  - id: bus_a
+    sda: GPIO19
+    scl: GPIO45
+    frequency: 100kHz
+
+# 屏 SPI 时钟/数据 (RGB 并口数据线在 display 里定义)
+spi:
+  - id: lcd_spi
+    clk_pin: GPIO48
+    mosi_pin: GPIO47
+
+touchscreen:
+  - platform: gt911
+    id: my_touchscreen
+    display: my_display
+    update_interval: 30ms
+    # 按下瞬间: 刷新最后触摸时间, 立即唤醒恢复亮度(替代轮询, 点一下就亮)
+    on_touch:
+      then:
+        - lambda: |-
+            id(g_last_touch_ms) = millis();
+            id(g_asleep) = false;
+        - light.turn_on:
+            id: backlight
+            brightness: !lambda 'return id(g_bright_norm);'
+
+# ST7701 4.0" 480x480 RGB 并口屏
+display:
+  - platform: st7701s
+    id: my_display
+    update_interval: never
+    auto_clear_enabled: false
+    spi_id: lcd_spi
+    spi_mode: MODE3
+    data_rate: 2MHz
+    color_order: RGB
+    invert_colors: false
+    dimensions:
+      width: 480
+      height: 480
+    cs_pin: GPIO39
+    de_pin: GPIO18
+    hsync_pin: GPIO16
+    vsync_pin: GPIO17
+    pclk_pin: GPIO21
+    pclk_frequency: 12MHz
+    pclk_inverted: false
+    hsync_pulse_width: 8
+    hsync_front_porch: 10
+    hsync_back_porch: 20
+    vsync_pulse_width: 8
+    vsync_front_porch: 10
+    vsync_back_porch: 10
+    # 以下为社区验证过的精简序列；若屏幕不亮，用 st7701_full_init.yaml 整段替换
+    init_sequence:
+      - 1
+      - [0xFF, 0x77, 0x01, 0x00, 0x00, 0x10]
+      - [0xCD, 0x00]
+    data_pins:
+      red: [11, 12, 13, 14, 0]
+      green: [8, 20, 3, 46, 9, 10]
+      blue: [4, 5, 6, 7, 15]
+
+# ---------------- 输出 / 灯 ----------------
+output:
+  # 背光 (IO38, LEDC)
+  - platform: ledc
+    pin: GPIO38
+    id: backlight_out
+    frequency: 1000Hz
+  # 继电器 (IO40, 高电平触发; 若继电器极性相反, 加 inverted: true)
+  - platform: gpio
+    pin: ${relay_pin}
+    id: relay_out
+
+light:
+  # 面板背光 (名字带 ASCII 后缀 BL, 避免与纯中文实体名冲突)
+  - platform: monochromatic
+    id: backlight
+    name: 背光BL
+    output: backlight_out
+    restore_mode: ALWAYS_ON
+  # ★ 继电器控制的灯, 名字就是 ${relay_name}, HA 中自动出现同名实体
+  # 注意: ESPHome 要求实体名含至少一个 ASCII 字符(中文会转成下划线, 全中文会互相冲突), 默认已带 L
+  - platform: binary
+    id: relay_light
+    name: ${relay_name}
+    output: relay_out
+    restore_mode: RESTORE_DEFAULT_OFF
+  # ===== 灯光页 按钮2~5: 本版无 light.homeassistant 平台, 改用 homeassistant.service
+  #       light.toggle 发指令, 状态回显走 sensor 段的 ha_l*_state 订阅(见 sensor 段) =====
+
+# ===== 灯光页 按钮6 第二排右 = 氛围灯(米家智能插座4 电源开关) =====
+switch:
+  - platform: homeassistant
+    id: ha_l6
+    name: 氛围灯插座S6
+    entity_id: ${misc_switch1}
+
+# ===== 灯光页 窗帘: 本版无 cover.homeassistant 平台, 滑条用 homeassistant.service
+#       cover.set_cover_position(旧版服务名, 非 set_position) 发定位指令 =====
+
+# ---------------- 深色科技风渐变背景 ----------------
+# 480x480 预渲染抖动渐变图 (scripts/gen_bg.py 生成), 避免 LVGL 渐变量化出横条
+image:
+  - platform: file
+    file: "images/bg_grad.png"
+    id: bg_grad
+    type: RGB565
+  - platform: file
+    file: "images/bg_grad_light.png"
+    id: bg_grad_light
+    type: RGB565
+  - platform: file
+    file: "images/bg_grad_pink.png"
+    id: bg_grad_pink
+    type: RGB565
+
+# ---------------- 中文字体 ----------------
+# 中文: 思源黑体 3755 常用字 + 全角标点 + ASCII (子集文件由 scripts/gen_zh_glyphs.py 生成)
+# 图标: Material Design Icons (与厂商原版一致的图标风格)
+font:
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_cn_20
+    size: 20
+    bpp: 2
+    glyphs: !include fonts/zh_glyphs.yaml
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_cn_28
+    size: 28
+    bpp: 4
+    glyphs: !include fonts/zh_glyphs.yaml
+    #加入了24号字体
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_cn_24
+    size: 24
+    bpp: 4
+    glyphs: !include fonts/zh_glyphs.yaml    
+  # 首页大时钟专用: 只有数字和冒号, 体积极小
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_digits_48
+    size: 48
+    bpp: 4
+    glyphs:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - ':'
+      - '-'
+      - '.'
+  # 墨水屏大字日期专用: 数字+月+日 (体积极小)
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_date_48
+    size: 50
+    bpp: 4
+    glyphs:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - '月'
+      - '日'
+  # 首页大字时钟专用: 64px
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_digits_64
+    size: 64
+    bpp: 4
+    glyphs:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - ':'
+      - '-'
+      - '.'
+  # 首页大字时钟专用: 80px (醒目)
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_digits_80
+    size: 80
+    bpp: 4
+    glyphs:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - ':'
+      - '-'
+      - '.'
+  # 首页大字时钟专用: 96px (最大号)
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_digits_96
+    size: 96
+    bpp: 4
+    glyphs:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - ':'
+      - '-'
+      - '.'
+  # 首页大字时钟专用: 112px (超大号)
+  - file: "fonts/NotoSansCJKsc-Regular.otf"
+    id: font_digits_105
+    size: 105
+    bpp: 4
+    glyphs:
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+      - '5'
+      - '6'
+      - '7'
+      - '8'
+      - '9'
+      - ':'
+      - '-'
+      - '.'
+  # 图标字体
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: font_mdi_24
+    size: 24
+    bpp: 4
+    glyphs: !include fonts/mdi_glyphs.yaml
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: font_mdi_32
+    size: 32
+    bpp: 4
+    glyphs: !include fonts/mdi_glyphs.yaml
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: font_mdi_80
+    size: 80
+    bpp: 4
+    glyphs: !include fonts/mdi_glyphs.yaml
+
+# ============================================================
+# LVGL 中文 5 屏 UI
+# 屏结构: 首页 / 灯光 / 开关 / 场景 / 设置 (底部导航)
+# 动态文本: label 的 text 用 time_format / printf_format / lambda 声明,
+#           由 lvgl.widget.refresh 定期重新求值
+# ============================================================
+lvgl:
+  displays: my_display
+  touchscreens: my_touchscreen
+  disp_bg_color: 0x0F141A
+  # 滑条静态水平渐变(声明式, 不随拖动实时变色)
+  gradients:
+    # 色温: 左冷蓝(6500K) -> 右暖橙(2700K)
+    - id: g_temp_grad
+      direction: HOR
+      stops:
+        - color: 0x8FC7FF
+          position: 0%
+        - color: 0xFFB35C
+          position: 100%
+    # 亮度: 左暗 -> 右亮
+    - id: g_bright_grad
+      direction: HOR
+      stops:
+        - color: 0x232C3D
+          position: 0%
+        - color: 0xFFE39E
+          position: 100%
+  theme:
+    dark_mode: true
+    button:
+      bg_color: 0x1A2138
+      pressed:
+        bg_color: 0x2A3A66
+      checked:
+        bg_color: 0x00D4FF
+        text_color: 0x0B1026
+      text_color: 0xE8EDF2
+      radius: 14
+    label:
+      text_color: 0xE8EDF2
+    slider:
+      bg_color: 0x1A2138
+  pages:
+    # ---------------- 第 1 屏: 首页 (信息聚合 · 大字时钟) ----------------
+    - id: page_home
+      bg_color: 0x0B1026
+      widgets:
+        # 深色科技风渐变背景 (预渲染抖动图, 无横条)
+        - image:
+            id: bg_home
+            src: bg_grad
+            x: 0
+            y: 0
+            width: 480
+            height: 480
+        # 顶部: 家庭名 (左上) + 日期 (右上)
+        - label:
+            id: lbl_home_name
+            x: 20
+            y: 4
+            width: 220
+            height: 26
+            text: !lambda |-
+              return id(home_name_text).state;
+            text_font: font_cn_20
+            text_color: 0x4CD964
+        - label:
+            id: lbl_date
+            x: 268
+            y: 6
+            width: 192
+            height: 26
+            text:
+              format: "%d月%d日 星期%s"
+              args:
+                - 'id(my_time).now().is_valid() ? id(my_time).now().month : 0'
+                - 'id(my_time).now().is_valid() ? id(my_time).now().day_of_month : 0'
+                - '([]() -> const char* { static const char* wk[]={"日","一","二","三","四","五","六"}; return id(my_time).now().is_valid() ? wk[id(my_time).now().day_of_week - 1] : "?"; }())'
+            text_font: font_cn_20
+            text_align: right
+            text_color: 0x8A98A8
+        # WiFi 状态图标: 绿=好 / 黄=弱 / 红=断网
+        - label:
+            id: lbl_wifi_icon
+            x: 270
+            y: 8
+            width: 22
+            height: 22
+            text: !lambda |-
+              if (!id(wifi_sig).has_state()) return "󰖪";  // 断网
+              int s = (int) id(wifi_sig).state;
+              if (s > -65) return "󰖩";   // 强
+              if (s > -80) return "󰖨";   // 中
+              return "󰖩";                // 弱(也显示wifi, 靠颜色区分)
+            text_font: font_mdi_24
+            text_align: center
+            text_color: !lambda |-
+              if (!id(wifi_sig).has_state()) return lv_color_hex(0xFF453A);  // 断网红
+              int s = (int) id(wifi_sig).state;
+              if (s > -65) return lv_color_hex(0x4CD964);
+              if (s > -80) return lv_color_hex(0xFFCC00);
+              return lv_color_hex(0xFF9500);
+        # 大字时钟 (左侧, 64px) + 右侧天气信息
+        - label:
+            id: lbl_time
+            x: 16
+            y: 25
+            width: 268
+            height: 150
+            text:
+              time_format: "%H:%M"
+              time: my_time
+            text_font: font_digits_105
+            text_align: left
+            text_color: 0xFF8C00
+        # 右侧: 天气图标 (太阳/月亮, 按时段) + 实时温度 (Open-Meteo API)
+        - label:
+            id: lbl_weather_icon
+            x: 287
+            y: 66
+            width: 84
+            height: 84
+            text: !lambda |-
+              auto now = id(my_time).now();
+              bool night = now.is_valid() && !(now.hour >= 6 && now.hour < 18);
+              switch (id(g_weather_code)) {
+                case 0: return std::string(night ? "󰖔" : "󰖙");
+                case 1: case 2: return std::string("󰖕");
+                case 3: return std::string("󰖐");
+                case 45: case 48: return std::string("󰖑");
+                case 51: case 53: case 55: case 61: case 63: case 65: case 66: case 67:
+                case 80: case 81: case 82: return std::string("󰖗");
+                case 71: case 73: case 75: case 77: case 85: case 86: return std::string("󰖘");
+                case 95: case 96: case 99: return std::string("󰖓");
+                default: return std::string(night ? "󰖔" : "󰖕");
+              }
+            text_font: font_mdi_80
+            text_align: center
+            text_color: 0xFFC94C
+        # 天气信息文本列 (城市名/天气/温度/湿度)
+        - label:
+            id: lbl_weather_city
+            x: 379
+            y: 65
+            width: 96
+            height: 26
+            text: !lambda |-
+              std::string c = id(city_text).state;   // 天气城市(HA text 实体可改)
+              if (c.empty()) c = "本地";
+              return c;
+            text_font: font_cn_20
+            text_align: left
+            text_color: 0xFFC94C
+        - label:
+            id: lbl_weather_desc
+            x: 379
+            y: 89
+            width: 96
+            height: 26
+            text: !lambda |-
+              return id(g_weather);
+            text_font: font_cn_20
+            text_align: left
+            text_color: 0xFFFFFF
+        - label:
+            id: lbl_weather_temp
+            x: 379
+            y: 113
+            width: 96
+            height: 26
+            text: !lambda |-
+              if (std::isnan(id(g_weather_temp))) return std::string("--");
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%.0f°C", id(g_weather_temp));
+              return std::string(buf);
+            text_font: font_cn_20
+            text_align: left
+            text_color: 0xFFFFFF
+        
+        # 自定义文本 (HA text 实体可改; 自动判断: ≤22字整段静止, 超出按每20字切段, 每3秒轮播)
+        - label:
+            id: lbl_greet
+            x: 20
+            y: 173
+            width: 440
+            height: 30
+            text: !lambda |-
+              std::string s = id(home_quote).state;
+              size_t ta = s.find_first_not_of(" \t|");
+              if (ta == std::string::npos) return std::string("");
+              size_t tb = s.find_last_not_of(" \t|");
+              s = s.substr(ta, tb - ta + 1);
+              // 统计可见字符(UTF-8中文3字节=1字, ASCII=1字)
+              int total = 0;
+              for (size_t i = 0; i < s.size();) {
+                unsigned char c = (unsigned char)s[i];
+                total++;
+                i += (c >= 0x80) ? 3 : 1;
+              }
+              if (total <= 22) return s;
+              // 超22字: 按每20字自动切段
+              std::vector<std::string> segs;
+              int cnt = 0; size_t st = 0;
+              for (size_t i = 0; i < s.size();) {
+                unsigned char c = (unsigned char)s[i];
+                int adv = (c >= 0x80) ? 3 : 1;
+                if (cnt >= 20) { segs.push_back(s.substr(st, i - st)); st = i; cnt = 0; }
+                cnt++; i += adv;
+              }
+              segs.push_back(s.substr(st));
+              int n = segs.size();
+              return segs[id(g_greet_seg) % n];
+            text_font: font_cn_20
+            text_align: center
+            text_color: 0x00D4FF
+        # ---------- 六卡信息区 (3 列 x 2 行, 玻璃质感+霓虹光) ----------
+        # 天气 (HA 中间实体 sensor.panel_weather, 文本: 晴/多云/雨...)
+        - container:
+            id: card_weather
+            x: 16
+            y: 226
+            width: 145
+            height: 82
+            bg_color: 0x141B33
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            drop_shadow_color: 0xFFC94C
+            drop_shadow_opa: 22%
+            drop_shadow_radius: 12
+            widgets:
+              - label:
+                  x: 12
+                  y: 6
+                  text: "󰋜"
+                  text_font: font_mdi_24
+                  text_align: center
+                  text_color: 0x00D4FF
+              - label:
+                  id: lbl_card1_title
+                  x: 48
+                  y: 4
+                  text: !lambda |-
+                    std::string t = id(card1_title_text).state;
+                    if (t.empty()) t = "系统";
+                    return t;
+                  text_font: font_cn_20
+                  text_color: 0x8A98A8
+              - label:
+                  id: lbl_weather
+                  x: 14
+                  y: 38
+                  width: 120
+                  height: 32
+                  text: !lambda |-
+                    float c = id(ha_card1).has_state() ? id(ha_card1).state : NAN;
+                    if (!std::isfinite(c)) return std::string("--");
+                    if (c <= 0) return std::string("无快递");
+                    char buf[24];
+                    snprintf(buf, sizeof(buf), "%d个快递待取", (int)c);
+                    return std::string(buf);
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: 0xFFFFFF
+        # 温度 (HA 中间实体 sensor.panel_temp)
+        - container:
+            id: card_temp
+            x: 168
+            y: 226
+            width: 145
+            height: 82
+            bg_color: 0x141B33
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            drop_shadow_color: 0xFF8A4C
+            drop_shadow_opa: 22%
+            drop_shadow_radius: 12
+            widgets:
+              - label:
+                  x: 12
+                  y: 6
+                  text: "󰔏"
+                  text_font: font_mdi_24
+                  text_color: 0xFF8A4C
+              - label:
+                  x: 48
+                  y: 4
+                  text: "室内温度"
+                  text_font: font_cn_20
+                  text_color: 0x8A98A8
+              - label:
+                  id: lbl_temp
+                  x: 14
+                  y: 38
+                  width: 120
+                  height: 32
+                  text:
+                    format: "%.1f℃"
+                    args:
+                      - 'id(ha_temp).has_state() ? id(ha_temp).state : NAN'
+                    if_nan: "--"
+                  text_font: font_cn_24
+                  text_align: center
+                  text_color: 0xFFFFFF
+              
+        # 湿度 (HA 中间实体 sensor.panel_hum)
+        - container:
+            id: card_hum
+            x: 320
+            y: 226
+            width: 145
+            height: 82
+            bg_color: 0x141B33
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            drop_shadow_color: 0x4CB8FF
+            drop_shadow_opa: 22%
+            drop_shadow_radius: 12
+            widgets:
+              - label:
+                  x: 12
+                  y: 6
+                  text: "󰖎"
+                  text_font: font_mdi_24
+                  text_color: 0x4CB8FF
+              - label:
+                  x: 48
+                  y: 3
+                  text: "室内湿度"
+                  text_font: font_cn_20
+                  text_color: 0x8A98A8
+              - label:
+                  id: lbl_hum
+                  x: 14
+                  y: 38
+                  width: 120
+                  height: 32
+                  text: !lambda |-
+                    float h = id(ha_hum).has_state() ? id(ha_hum).state : NAN;
+                    if (!std::isfinite(h)) return std::string("--");
+                    const char* lv;
+                    if (h < 40) lv = "干燥";
+                    else if (h < 60) lv = "舒适";
+                    else if (h < 80) lv = "偏高";
+                    else lv = "过高";
+                    char buf[24];
+                    snprintf(buf, sizeof(buf), "%.0f %s", h, lv);
+                    return std::string(buf);
+                  text_font: font_cn_24
+                  text_align: center
+                  text_color: 0x4CD964
+             
+        # 空气质量 (HA 中间实体 sensor.panel_air, AQI)
+        - container:
+            id: card_air
+            x: 16
+            y: 318
+            width: 145
+            height: 82
+            bg_color: 0x141B33
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            drop_shadow_color: 0x4CD964
+            drop_shadow_opa: 22%
+            drop_shadow_radius: 12
+            widgets:
+              - label:
+                  x: 12
+                  y: 6
+                  text: "󰵃"
+                  text_font: font_mdi_24
+                  text_color: 0x4CD964
+              - label:
+                  x: 48
+                  y: 3
+                  text: "空气质量"
+                  text_font: font_cn_20
+                  text_color: 0x8A98A8
+              - label:
+                  id: lbl_air
+                  x: 14
+                  y: 38
+                  width: 120
+                  height: 32
+                  text: !lambda |-
+                    float a = id(ha_air).has_state() ? id(ha_air).state : NAN;
+                    if (!std::isfinite(a)) return std::string("--");
+                    const char* lv;
+                    if (a < 35) lv = "优";
+                    else if (a < 75) lv = "良";
+                    else if (a < 115) lv = "轻度";
+                    else if (a < 150) lv = "中度";
+                    else if (a < 250) lv = "重度";
+                    else lv = "严重";
+                    char buf[24];
+                    snprintf(buf, sizeof(buf), "%.0f %s", a, lv);
+                    return std::string(buf);
+                  text_font: font_cn_24
+                  text_align: center
+                  text_color: 0x4CD964
+              
+        # 水质 (HA 中间实体 sensor.panel_water, TDS)
+        - container:
+            id: card_water
+            x: 168
+            y: 318
+            width: 145
+            height: 82
+            bg_color: 0x141B33
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            drop_shadow_color: 0x00D4FF
+            drop_shadow_opa: 22%
+            drop_shadow_radius: 12
+            widgets:
+              - label:
+                  x: 12
+                  y: 6
+                  text: "󰖌"
+                  text_font: font_mdi_24
+                  text_color: 0x00D4FF
+              - label:
+                  x: 48
+                  y: 3
+                  text: "水质"
+                  text_font: font_cn_20
+                  text_color: 0x8A98A8
+              - label:
+                  id: lbl_water
+                  x: 14
+                  y: 38
+                  width: 120
+                  height: 32
+                  text: !lambda |-
+                    float w = id(ha_water).has_state() ? id(ha_water).state : NAN;
+                    if (!std::isfinite(w)) return std::string("--");
+                    const char* lv;
+                    if (w < 50) lv = "纯净";
+                    else if (w < 150) lv = "优质";
+                    else if (w < 300) lv = "良好";
+                    else if (w < 450) lv = "一般";
+                    else lv = "较差";
+                    char buf[24];
+                    snprintf(buf, sizeof(buf), "%.0f %s", w, lv);
+                    return std::string(buf);
+                  text_font: font_cn_24
+                  text_align: center
+                  text_color: 0x4CD964
+            
+        # 电费余额 (HA 中间实体 sensor.panel_elec)
+        - container:
+            id: card_elec
+            x: 320
+            y: 318
+            width: 145
+            height: 82
+            bg_color: 0x141B33
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            drop_shadow_color: 0xFFC94C
+            drop_shadow_opa: 22%
+            drop_shadow_radius: 12
+            widgets:
+              - label:
+                  x: 12
+                  y: 6
+                  text: "󰞺"
+                  text_font: font_mdi_24
+                  text_color: 0xFFC94C
+              - label:
+                  x: 48
+                  y: 6
+                  text: "电费余额"
+                  text_font: font_cn_20
+                  text_color: 0x8A98A8
+              - label:
+                  id: lbl_elec
+                  x: 14
+                  y: 38
+                  width: 120
+                  height: 32
+                  text: !lambda |-
+                    float e = id(ha_elec).has_state() ? id(ha_elec).state : NAN;
+                    if (!std::isfinite(e)) return std::string("--");
+                    char buf[16];
+                    snprintf(buf, sizeof(buf), "¥%.1f", e);
+                    return std::string(buf);
+                  text_font: font_cn_24
+                  text_align: center
+                  text_color: !lambda |-
+                    float e = id(ha_elec).has_state() ? id(ha_elec).state : NAN;
+                    return (std::isfinite(e) && e < 30.0f) ? lv_color_hex(0xFF3B30) : lv_color_hex(0xFFFFFF);
+              
+        # 底部导航 (6 按钮, 每个 80px)
+        - button:
+            id: nav_home_btn
+            x: 0
+            y: 406
+            width: 80
+            height: 72
+            bg_color: 0x00D4FF
+            radius: 22
+            drop_shadow_color: 0x00D4FF
+            drop_shadow_opa: 70%
+            drop_shadow_radius: 10
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋜"
+                  text_font: font_mdi_24
+                  text_color: 0x0B1026
+              - label:
+                  x: 3
+                  y: 24
+                  text: "首页"
+                  text_font: font_cn_24
+                  text_color: 0x0B1026
+        - button:
+            x: 80
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_light
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰌵"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "控制"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 160
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_switch
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰔡"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "环境"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 240
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_scene
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰏘"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "场景"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 320
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_family
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋠"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "家庭"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 400
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_set
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰒓"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "设置"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+    # ---------------- 第 2 屏: 灯光 ----------------
+    - id: page_light
+      bg_color: 0x0B1026
+      widgets:
+        # 深色科技风渐变背景 (预渲染抖动图, 无横条)
+        - image:
+            id: bg_light
+            src: bg_grad
+            x: 0
+            y: 0
+            width: 480
+            height: 480
+        # ======================================================================
+        # 灯光页 6 个开关按钮 (3列2排, 从左到右、从上到下编号1~6)
+        # 布局:
+        #   [按钮1 第一排左] [按钮2 第一排中] [按钮3 第一排右]
+        #   [按钮4 第二排左] [按钮5 第二排中] [按钮6 第二排右]
+        #
+        # ★ 静态绑定说明 (换灯改这里后重刷即可):
+        #   - 按钮1 = 板载继电器(本地硬件), 不依赖 HA, 无需填实体;
+        #   - 按钮2~6 以后要接真实 HA 灯时, 在文件顶部 light: 段(约1168行)按
+        #     下方模板各加一条 homeassistant 灯订阅, 再把对应按钮的 on_click 改成
+        #     light.toggle: <该订阅id>, 图标 text_color lambda 也读该订阅 is_on:
+        #       - platform: homeassistant
+        #         id: ha_l2            # 按钮2专用, 与下面按钮对应
+        #         name: 顶灯L2
+        #         entity_id: light.xxx # ← 把这里换成你家灯的 entity_id
+        #   - 每个按钮块上方有【按钮N】备注, 对应编号一目了然。
+        # ======================================================================
+        # 【按钮1】第一排左 = 板载继电器(本地, 已绑定, 无需填HA实体)
+        - button:
+            id: rel_card
+            x: 14
+            y: 15
+            width: 142
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            on_click:
+              - light.toggle: relay_light
+            widgets:
+              - label:
+                  id: lbl_relay_icon
+                  x: -13
+                  y: 1
+                  width: 142
+                  text: "󰌵"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex(id(relay_light).current_values.is_on() ? 0xFFD166 : 0x5A6678);
+              - label:
+                  x: -14
+                  y: 34
+                  width: 142
+                  text: "继电器"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EDF2
+        # 【按钮2】第一排中 = 智能吸顶灯(已绑 ha_l2, 换灯改 light 段 entity_id)
+        - button:
+            id: demo_l2
+            x: 168
+            y: 15
+            width: 142
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            on_click:
+              - homeassistant.service:
+                  service: light.toggle
+                  data:
+                    entity_id: ${light2}
+            widgets:
+              - label:
+                  id: lbl_l2_icon
+                  x: -13
+                  y: 1
+                  width: 142
+                  text: "󰌵"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_l2_state).state == "on" ? 0xFFD166 : 0x5A6678);
+              - label:
+                  x: -14
+                  y: 34
+                  width: 142
+                  text: "吸顶灯"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EDF2
+        # 【按钮3】第一排右 = 彩虹智能台灯(已绑 ha_l3, 换灯改 light 段 entity_id)
+        - button:
+            id: demo_l3
+            x: 322
+            y: 15
+            width: 142
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            on_click:
+              - homeassistant.service:
+                  service: light.toggle
+                  data:
+                    entity_id: ${light3}
+            widgets:
+              - label:
+                  id: lbl_l3_icon
+                  x: -13
+                  y: 1
+                  width: 142
+                  text: "󰌵"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_l3_state).state == "on" ? 0xFFD166 : 0x5A6678);
+              - label:
+                  x: -14
+                  y: 34
+                  width: 142
+                  text: "台灯"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EDF2
+        # 【按钮4】第二排左 = LED智能吊灯(已绑 ha_l4, 换灯改 light 段 entity_id)
+        - button:
+            id: demo_l4
+            x: 14
+            y: 119
+            width: 142
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            on_click:
+              - homeassistant.service:
+                  service: light.toggle
+                  data:
+                    entity_id: ${light4}
+            widgets:
+              - label:
+                  id: lbl_l4_icon
+                  x: -13
+                  y: 1
+                  width: 142
+                  text: "󰌵"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_l4_state).state == "on" ? 0xFFD166 : 0x5A6678);
+              - label:
+                  x: -14
+                  y: 34
+                  width: 142
+                  text: "吊灯"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EDF2
+        # 【按钮5】第二排中 = 阳台灯(已绑 ha_l5, 换灯改 light 段 entity_id)
+        - button:
+            id: demo_l5
+            x: 168
+            y: 119
+            width: 142
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            on_click:
+              - homeassistant.service:
+                  service: light.toggle
+                  data:
+                    entity_id: ${light5}
+            widgets:
+              - label:
+                  id: lbl_l5_icon
+                  x: -13
+                  y: 1
+                  width: 142
+                  text: "󰌵"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_l5_state).state == "on" ? 0xFFD166 : 0x5A6678);
+              - label:
+                  x: -14
+                  y: 34
+                  width: 142
+                  text: "阳台灯"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EDF2
+        # 【按钮6】第二排右 = 氛围灯(米家智能插座4 电源, 已绑 ha_l6 switch)
+        - button:
+            id: demo_l6
+            x: 322
+            y: 119
+            width: 142
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            on_click:
+              - switch.toggle: ha_l6
+            widgets:
+              - label:
+                  id: lbl_l6_icon
+                  x: -13
+                  y: 1
+                  width: 142
+                  text: "󰌵"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_l6).state ? 0xFFD166 : 0x5A6678);
+              - label:
+                  x: -14
+                  y: 34
+                  width: 142
+                  text: "氛围灯"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EDF2
+        # ---- 色温条(标签同行左侧, 示例未绑实体) ----
+        - label:
+            x: 18
+            y: 219
+            text: "色温"
+            text_font: font_cn_28
+            text_color: 0x8A98A8
+        - slider:
+            id: demo_temp_slider
+            x: 92
+            y: 224
+            width: 370
+            height: 30
+            min_value: 0
+            max_value: 100
+            value: 50
+            indicator:
+              bg_color: 0xFF9EC4
+            # 色温: 0=冷(6500K) 100=暖(2700K), 控智能吸顶灯; 纯单向发送不回读
+            on_value:
+              then:
+                - homeassistant.service:
+                    service: light.turn_on
+                    data:
+                      entity_id: ${light2}
+                    data_template:
+                      color_temp_kelvin: !lambda |-
+                          return (int)(6500.0 - (x / 100.0) * (6500.0 - 2700.0));
+        # ---- 亮度条(标签同行左侧, 示例未绑实体) ----
+        - label:
+            x: 18
+            y: 281
+            text: "亮度"
+            text_font: font_cn_28
+            text_color: 0x8A98A8
+        - slider:
+            id: demo_bright_slider
+            x: 92
+            y: 286
+            width: 370
+            height: 30
+            min_value: 0
+            max_value: 100
+            value: 80
+            indicator:
+              bg_color: 0xB98CFF
+            # 亮度 0~100%, 控智能吸顶灯; 纯单向发送不回读
+            on_value:
+              then:
+                - homeassistant.service:
+                    service: light.turn_on
+                    data:
+                      entity_id: ${light2}
+                    data_template:
+                      brightness_pct: !lambda |-
+                          return (int)x;
+        # ---- 窗帘滑条: 正确服务名 cover.set_cover_position (旧版), 非 set_position ----
+        - label:
+            x: 18
+            y: 344
+            text: "窗帘"
+            text_font: font_cn_28
+            text_color: 0x8A98A8
+        - slider:
+            id: demo_curtain_slider
+            x: 92
+            y: 348
+            width: 308
+            height: 30
+            min_value: 0
+            max_value: 100
+            value: 100
+            # 方向反转: 滑条0=全开, 100=全关(右=关), 映射到HA position=100-x
+            on_value:
+              then:
+                - if:
+                    condition:
+                      lambda: 'return !id(g_cur_sync);'
+                    then:
+                      - homeassistant.service:
+                          service: cover.set_cover_position
+                          data:
+                            entity_id: ${curtain}
+                          data_template:
+                            position: !lambda |-
+                              return 100 - (int)x;
+                - lambda: 'id(g_cur_sync) = false;'
+        # 当前开合度回显(只读): 显示 HA 实际 position, text 动态绑定由 refresh 刷新
+        - label:
+            id: lbl_curtain_pct
+            x: 406
+            y: 348
+            width: 58
+            text: !lambda |-
+                const std::string &ps = id(ha_curtain_pos).state;
+                if (ps.empty()) return std::string("--%");
+                return str_sprintf("%d%%", (int)lroundf(atof(ps.c_str())));
+            text_font: font_cn_20
+            text_align: right
+            text_color: 0x8A98A8
+        # 底部导航 (6 按钮, 每个 80px)
+        - button:
+            x: 0
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_home
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋜"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "首页"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            id: nav_light_btn
+            x: 80
+            y: 406
+            width: 80
+            height: 72
+            bg_color: 0x00D4FF
+            radius: 22
+            drop_shadow_color: 0x00D4FF
+            drop_shadow_opa: 70%
+            drop_shadow_radius: 10
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰌵"
+                  text_font: font_mdi_24
+                  text_color: 0x0B1026
+              - label:
+                  x: 3
+                  y: 24
+                  text: "控制"
+                  text_font: font_cn_24
+                  text_color: 0x0B1026
+        - button:
+            x: 160
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_switch
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰔡"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "环境"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 240
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_scene
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰏘"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "场景"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 320
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_family
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋠"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "家庭"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 400
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_set
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰒓"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "设置"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+    # ---------------- 第 3 屏: 开关 (预留) ----------------
+    - id: page_switch
+      bg_color: 0x0B1026
+      widgets:
+        # 深色科技风渐变背景 (预渲染抖动图, 无横条)
+        - image:
+            id: bg_switch
+            src: bg_grad
+            x: 0
+            y: 0
+            width: 480
+            height: 480
+        # ===== 卡片1: 燃气热水器 =====
+        - obj:
+            x: 12
+            y: 3
+            width: 456
+            height: 182
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            widgets:
+              - label:
+                  x: 10
+                  y: 4
+                  text: "󰾒"
+                  text_font: font_mdi_24
+                  text_color: 0xFF8A5C
+              - label:
+                  x: 44
+                  y: -5
+                  text: "燃气热水器"
+                  text_font: font_cn_28
+                  text_color: 0xE8EEF8
+        # 热水器电源
+        - button:
+            x: 410
+            y: 14
+            width: 40
+            height: 40
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 12
+            on_click:
+              - homeassistant.service:
+                  service: switch.toggle
+                  data:
+                    entity_id: ${wh_switch}
+            widgets:
+              - label:
+                  x: -15
+                  y: -1
+                  width: 40
+                  text: "󰐥"
+                  text_font: font_mdi_24
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_wh_sw).state == "on" ? 0xFFD166 : 0x5A6678);
+                  id: lbl_wh_pwr_icon
+        # 温度 -
+        - button:
+            x: 20
+            y: 66
+            width: 66
+            height: 62
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 14
+            on_click:
+              - homeassistant.service:
+                  service: number.set_value
+                  data:
+                    entity_id: ${wh_target_temp}
+                  data_template:
+                    value: !lambda |-
+                      float v = atof(id(ha_wh_temp).state.c_str());
+                      if (v < 10) v = 41;
+                      v -= 1; if (v < 35) v = 35;
+                      return (int)v;
+            widgets:
+              - label:
+                  x: -12
+                  y: 5
+                  width: 66
+                  text: "󰍴"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0xE8EEF8
+        # 目标温度
+        - label:
+            x: 86
+            y: 60
+            width: 118
+            height: 56
+            text: !lambda |-
+              const std::string &s = id(ha_wh_temp).state;
+              if (s.empty() || s == "unknown" || s == "unavailable") return std::string("--");
+              return str_sprintf("%d", (int)lroundf(atof(s.c_str())));
+            text_font: font_digits_48
+            text_align: center
+            text_color: 0xFFD166
+            id: lbl_wh_temp
+        - label:
+            x: 185
+            y: 80
+            width: 44
+            text: "°C"
+            text_font: font_cn_20
+            text_color: 0xFFD166
+        # 温度 +
+        - button:
+            x: 246
+            y: 66
+            width: 66
+            height: 62
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 14
+            on_click:
+              - homeassistant.service:
+                  service: number.set_value
+                  data:
+                    entity_id: ${wh_target_temp}
+                  data_template:
+                    value: !lambda |-
+                      float v = atof(id(ha_wh_temp).state.c_str());
+                      if (v < 10) v = 41;
+                      v += 1; if (v > 60) v = 60;
+                      return (int)v;
+            widgets:
+              - label:
+                  x: -15
+                  y: 5
+                  width: 66
+                  text: "󰐕"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0xE8EEF8
+        # e感温 开关
+        - button:
+            x: 324
+            y: 66
+            width: 116
+            height: 62
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 14
+            on_click:
+              - homeassistant.service:
+                  service: select.select_option
+                  data:
+                    entity_id: ${wh_mode}
+                  data_template:
+                    option: !lambda |-
+                      return id(ha_wh_mode).state == "e感温模式" ? std::string("普通模式") : std::string("e感温模式");
+            widgets:
+              - label:
+                  x: 5
+                  y: 4
+                  text: "󱩿"
+                  text_font: font_mdi_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_wh_mode).state == "e感温模式" ? 0x52D981 : 0x5A6678);
+                  id: lbl_wh_e_icon
+              - label:
+                  x: 38
+                  y: 7
+                  text: "e感温"
+                  text_font: font_cn_20
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_wh_mode).state == "e感温模式" ? 0x52D981 : 0x5A6678);
+                  id: lbl_wh_e_txt
+        # 进水温度(HA为华氏°F, 固件转摄氏°C)
+        - label:
+            x: 24
+            y: 143
+            width: 150
+            text: !lambda |-
+              const std::string &s = id(ha_wh_in).state;
+              if (s.empty() || s == "unknown" || s == "unavailable") return std::string("进水 --°C");
+              float c = (atof(s.c_str()) - 32.0f) * 5.0f / 9.0f;
+              return str_sprintf("进水 %d°C", (int)lroundf(c));
+            text_font: font_cn_20
+            text_color: 0x9FB4CC
+            id: lbl_wh_in
+        # 出水温度(华氏转摄氏)
+        - label:
+            x: 182
+            y: 143
+            width: 150
+            text: !lambda |-
+              const std::string &s = id(ha_wh_out).state;
+              if (s.empty() || s == "unknown" || s == "unavailable") return std::string("出水 --°C");
+              float c = (atof(s.c_str()) - 32.0f) * 5.0f / 9.0f;
+              return str_sprintf("出水 %d°C", (int)lroundf(c));
+            text_font: font_cn_20
+            text_color: 0x9FB4CC
+            id: lbl_wh_out
+        # 运行状态: 火焰有=正在运行(绿), 无=没有运行(灰)
+        - label:
+            x: 336
+            y: 143
+            width: 120
+            text: !lambda |-
+              return id(ha_wh_flame).state == "on" ? std::string("正在运行") : std::string("没有运行");
+            text_font: font_cn_20
+            text_align: right
+            text_color: !lambda |-
+              return lv_color_hex(id(ha_wh_flame).state == "on" ? 0x52D981 : 0x5A6678);
+            id: lbl_wh_flame
+        # ===== 卡片2: 云米空调 =====
+        - obj:
+            x: 12
+            y: 204
+            width: 456
+            height: 196
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            widgets:
+              - label:
+                  x: 10
+                  y: 5
+                  text: "󰀛"
+                  text_font: font_mdi_24
+                  text_color: 0x7EB8FF
+              - label:
+                  x: 54
+                  y: -5
+                  text: "中央空调"
+                  text_font: font_cn_28
+                  text_color: 0xE8EEF8
+        # 空调电源
+        - button:
+            x: 410
+            y: 218
+            width: 40
+            height: 40
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 12
+            on_click:
+              - homeassistant.service:
+                  service: climate.set_hvac_mode
+                  data:
+                    entity_id: ${ac}
+                  data_template:
+                    hvac_mode: !lambda |-
+                      return id(ha_ac_state).state == "off" ? std::string("cool") : std::string("off");
+            widgets:
+              - label:
+                  x: -19
+                  y: -1
+                  width: 40
+                  text: "󰐥"
+                  text_font: font_mdi_24
+                  text_align: center
+                  text_color: !lambda |-
+                    return lv_color_hex((id(ha_ac_state).state != "off" && id(ha_ac_state).state != "unavailable") ? 0x00D4FF : 0x5A6678);
+                  id: lbl_ac_pwr_icon
+        # 温度 -
+        - button:
+            x: 20
+            y: 270
+            width: 66
+            height: 62
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 14
+            on_click:
+              - homeassistant.service:
+                  service: climate.set_temperature
+                  data:
+                    entity_id: ${ac}
+                  data_template:
+                    temperature: !lambda |-
+                      float f = atof(id(ha_ac_set).state.c_str());
+                      if (f < 40) f = 79;
+                      float c = (f - 32) * 5 / 9 - 1;
+                      if (c < 16) c = 16;
+                      return c * 9 / 5 + 32;
+            widgets:
+              - label:
+                  x: -13
+                  y: 3
+                  width: 66
+                  text: "󰍴"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0xE8EEF8
+        # 目标温度
+        - label:
+            x: 86
+            y: 261
+            width: 118
+            height: 58
+            text: !lambda |-
+              const std::string &s = id(ha_ac_set).state;
+              if (s.empty() || s == "unknown" || s == "unavailable") return std::string("--");
+              float f = atof(s.c_str());
+              if (f < 40) return std::string("--");
+              return str_sprintf("%d", (int)lroundf((f - 32) * 5 / 9));
+            text_font: font_digits_48
+            text_align: center
+            text_color: 0x00D4FF
+            id: lbl_ac_set
+        - label:
+            x: 185
+            y: 278
+            width: 44
+            text: "°C"
+            text_font: font_cn_20
+            text_color: 0x00D4FF
+        # 温度 +
+        - button:
+            x: 233
+            y: 270
+            width: 66
+            height: 62
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 14
+            on_click:
+              - homeassistant.service:
+                  service: climate.set_temperature
+                  data:
+                    entity_id: ${ac}
+                  data_template:
+                    temperature: !lambda |-
+                      float f = atof(id(ha_ac_set).state.c_str());
+                      if (f < 40) f = 79;
+                      float c = (f - 32) * 5 / 9 + 1;
+                      if (c > 31) c = 31;
+                      return c * 9 / 5 + 32;
+            widgets:
+              - label:
+                  x: -13
+                  y: 5
+                  width: 66
+                  text: "󰐕"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0xE8EEF8
+        # 室温
+        - label:
+            x: 324
+            y: 266
+            width: 120
+            height: 28
+            text: "当前室温"
+            text_font: font_cn_20
+            text_align: center
+            text_color: 0x8A98A8
+        - label:
+            x: 322
+            y: 293
+            width: 120
+            height: 35
+            text: !lambda |-
+              const std::string &s = id(ha_ac_cur).state;
+              if (s.empty() || s == "unknown" || s == "unavailable") return std::string("--");
+              float f = atof(s.c_str());
+              if (f < 40) return std::string("--");
+              return str_sprintf("%d°C", (int)lroundf((f - 32) * 5 / 9));
+            text_font: font_cn_28
+            text_align: center
+            text_color: 0xE8EEF8
+            id: lbl_ac_cur
+        - button:
+            x: 14
+            y: 348
+            width: 106
+            height: 44
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 12
+            on_click:
+              - homeassistant.service:
+                  service: climate.set_hvac_mode
+                  data:
+                    entity_id: ${ac}
+                    hvac_mode: cool
+            widgets:
+              - label:
+                  x: -5
+                  y: 1
+                  text: "󰜗"
+                  text_font: font_mdi_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "cool" ? 0x7EB8FF : 0x5A6678);
+                  id: lbl_ac_m_cool
+              - label:
+                  x: 32
+                  y: -2
+                  text: "制冷"
+                  text_font: font_cn_20
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "cool" ? 0x7EB8FF : 0x8A98A8);
+        - button:
+            x: 128
+            y: 348
+            width: 106
+            height: 44
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 12
+            on_click:
+              - homeassistant.service:
+                  service: climate.set_hvac_mode
+                  data:
+                    entity_id: ${ac}
+                    hvac_mode: heat
+            widgets:
+              - label:
+                  x: -5
+                  y: 1
+                  text: "󱩅"
+                  text_font: font_mdi_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "heat" ? 0xFF8A8A : 0x5A6678);
+                  id: lbl_ac_m_heat
+              - label:
+                  x: 32
+                  y: -2
+                  text: "制热"
+                  text_font: font_cn_20
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "heat" ? 0xFF8A8A : 0x8A98A8);
+        - button:
+            x: 242
+            y: 348
+            width: 106
+            height: 44
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 12
+            on_click:
+              - homeassistant.service:
+                  service: climate.set_hvac_mode
+                  data:
+                    entity_id: ${ac}
+                    hvac_mode: dry
+            widgets:
+              - label:
+                  x: -5
+                  y: 1
+                  text: "󰖌"
+                  text_font: font_mdi_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "dry" ? 0x52D981 : 0x5A6678);
+                  id: lbl_ac_m_dry
+              - label:
+                  x: 32
+                  y: -2
+                  text: "除湿"
+                  text_font: font_cn_20
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "dry" ? 0x52D981 : 0x8A98A8);
+        - button:
+            x: 356
+            y: 348
+            width: 106
+            height: 44
+            bg_color: 0x1C2748
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 12
+            on_click:
+              - homeassistant.service:
+                  service: climate.set_hvac_mode
+                  data:
+                    entity_id: ${ac}
+                    hvac_mode: "off"
+            widgets:
+              - label:
+                  x: -5
+                  y: 1
+                  text: "󰐥"
+                  text_font: font_mdi_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "off" ? 0x8A98A8 : 0x5A6678);
+                  id: lbl_ac_m_off
+              - label:
+                  x: 32
+                  y: 0
+                  text: "关机"
+                  text_font: font_cn_20
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_ac_state).state == "off" ? 0x8A98A8 : 0x8A98A8);
+        # 底部导航 (6 按钮, 每个 80px)
+        - button:
+            x: 0
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_home
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋜"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "首页"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 80
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_light
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰌵"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "控制"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            id: nav_switch_btn
+            x: 160
+            y: 406
+            width: 80
+            height: 72
+            bg_color: 0x00D4FF
+            radius: 22
+            drop_shadow_color: 0x00D4FF
+            drop_shadow_opa: 70%
+            drop_shadow_radius: 10
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰔡"
+                  text_font: font_mdi_24
+                  text_color: 0x0B1026
+              - label:
+                  x: 3
+                  y: 24
+                  text: "环境"
+                  text_font: font_cn_24
+                  text_color: 0x0B1026
+        - button:
+            x: 240
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_scene
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰏘"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "场景"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 320
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_family
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋠"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "家庭"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 400
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_set
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰒓"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "设置"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+    # ---------------- 第 4 屏: 场景 (预留) ----------------
+    - id: page_scene
+      bg_color: 0x0B1026
+      widgets:
+        # 深色科技风渐变背景 (预渲染抖动图, 无横条)
+        - image:
+            id: bg_scene
+            src: bg_grad
+            x: 0
+            y: 0
+            width: 480
+            height: 480
+        # ===== 场景页: 按钮只发 scene.turn_on, 场景内容用户自己在 HA 场景编辑器建 =====
+        # 命名(对齐 HA UI 自建场景的拼音 entity_id):
+        #   scene.<回家场景> 回家 / scene.<离家场景> 离家 / scene.<睡眠场景> 睡眠
+        #   scene.<观影场景> 观影 / scene.you_xi 游戏 / scene.<通风场景> 通风
+        #   scene.<布防场景> 布防 / scene.<车库场景> 撤防 / scene.<全关场景> 全关
+        # 行1
+        - button:
+            x: 14
+            y: 57
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_home}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰋜"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0xFFD166
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "回家"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EEF8
+        - button:
+            x: 168
+            y: 57
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_leave}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰍃"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0x7EB8FF
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "离家"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EEF8
+        - button:
+            x: 322
+            y: 57
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_sleep}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰂙"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0x9B8CFF
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "睡眠"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EEF8
+        # 行2
+        - button:
+            x: 14
+            y: 163
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_off_all}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰎁"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0xFF8A8A
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "观影"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EEF8
+        - button:
+            x: 168
+            y: 163
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              # 游戏场景: 开追光氛围灯 (声光律动/灵敏度/绽放三项HA未暴露, 待桥接)
+              - homeassistant.service:
+                  service: light.turn_on
+                  data:
+                    entity_id: ${strip_light}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰊖"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0x6BE3C7
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "游戏"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EEF8
+        - button:
+            x: 322
+            y: 163
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_fan}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰈐"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0x52D981
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "通风"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xE8EEF8
+        # 行3: 布防(绿) / 撤防(红)
+        - button:
+            x: 14
+            y: 269
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_guard}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰕥"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0x52D981
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "布防"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0x52D981
+        - button:
+            x: 168
+            y: 269
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_garage}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰦞"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0xFF6B6B
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "撤防"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0xFF6B6B
+        # 行3 第3格: 全关(一键熄灯, 可在 HA 改场景内容)
+        - button:
+            x: 322
+            y: 269
+            width: 142
+            height: 96
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 16
+            on_click:
+              - homeassistant.service:
+                  service: scene.turn_on
+                  data:
+                    entity_id: ${scene_all_off}
+            widgets:
+              - label:
+                  x: -8
+                  y: 9
+                  width: 142
+                  text: "󰐥"
+                  text_font: font_mdi_32
+                  text_align: center
+                  text_color: 0x8A98A8
+              - label:
+                  x: -8
+                  y: 43
+                  width: 142
+                  text: "全关"
+                  text_font: font_cn_28
+                  text_align: center
+                  text_color: 0x8A98A8
+        # 底部导航 (6 按钮, 每个 80px)
+        - button:
+            x: 0
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_home
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋜"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "首页"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 80
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_light
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰌵"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "控制"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 160
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_switch
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰔡"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "环境"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            id: nav_scene_btn
+            x: 240
+            y: 406
+            width: 80
+            height: 72
+            bg_color: 0x00D4FF
+            radius: 22
+            drop_shadow_color: 0x00D4FF
+            drop_shadow_opa: 70%
+            drop_shadow_radius: 10
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰏘"
+                  text_font: font_mdi_24
+                  text_color: 0x0B1026
+              - label:
+                  x: 3
+                  y: 24
+                  text: "场景"
+                  text_font: font_cn_24
+                  text_color: 0x0B1026
+        - button:
+            x: 320
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_family
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋠"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "家庭"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 400
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_set
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰒓"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "设置"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+    # ---------------- 第 5 屏: 家庭信息 (3 卡片文本由 HA 模板实体聚合, 支持 #RRGGBB文字# 混色) ----------------
+    - id: page_family
+      bg_color: 0x0B1026
+      widgets:
+        # 深色科技风渐变背景 (预渲染抖动图, 无横条)
+        - image:
+            id: bg_family
+            src: bg_grad
+            x: 0
+            y: 0
+            width: 480
+            height: 480
+        - label:
+            x: 0
+            y: 12
+            width: 480
+            height: 40
+            text: "家庭信息"
+            text_font: font_cn_28
+            text_align: center
+        # 卡片1: 问候+人名+到家时长, 末尾同接天气(有雨/无雨)
+        - container:
+            x: 8
+            y: 60
+            width: 464
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            widgets:
+              - label:
+                  id: lbl_family_presence
+                  x: 14
+                  y: 10
+                  width: 436
+                  height: 30
+                  text: !lambda |-
+                    std::string s = id(ha_family_presence).state;
+                    if (s.empty()) return std::string("等待 Home Assistant 数据...");
+                    auto pick = [](const std::string& src, int idx) -> std::string {
+                      std::string cur; int n = 0;
+                      for (size_t i = 0; i <= src.size(); i++) {
+                        if (i == src.size() || src[i] == '\n') {
+                          size_t a = 0, b = cur.size();
+                          while (a < b && (cur[a]==' '||cur[a]=='\t')) a++;
+                          while (b > a && (cur[b-1]==' '||cur[b-1]=='\t')) b--;
+                          std::string t = cur.substr(a, b - a);
+                          if (!t.empty()) { if (n == idx) return t; n++; }
+                          cur.clear();
+                        } else cur += src[i];
+                      }
+                      return std::string("");
+                    };
+                    std::string line1 = pick(s, 0);
+                    int c = id(g_weather_code);
+                    if (c >= 0) {
+                      bool rain = (c==51||c==53||c==55||c==61||c==63||c==65||c==66||c==67
+                                ||c==80||c==81||c==82||c==95||c==96||c==99);
+                      line1 += rain ? ".今天有雨" : ".今天无雨";
+                    }
+                    return line1;
+                  text_font: font_cn_24
+                  text_color: 0xFF9EC4
+                  recolor: true
+              - label:
+                  id: lbl_room_living
+                  x: 14
+                  y: 44
+                  width: 104
+                  height: 30
+                  text: !lambda |-
+                    return std::string("客厅 ") + id(ha_room_living).state;
+                  text_font: font_cn_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_room_living).state == "有人" ? 0xFF6B6B : 0x8A98A8);
+              - label:
+                  id: lbl_room_master
+                  x: 124
+                  y: 44
+                  width: 104
+                  height: 30
+                  text: !lambda |-
+                    return std::string("主卧 ") + id(ha_room_master).state;
+                  text_font: font_cn_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_room_master).state == "有人" ? 0xFF6B6B : 0x8A98A8);
+              - label:
+                  id: lbl_room_bath2
+                  x: 234
+                  y: 44
+                  width: 104
+                  height: 30
+                  text: !lambda |-
+                    return std::string("次卫 ") + id(ha_room_bath2).state;
+                  text_font: font_cn_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_room_bath2).state == "有人" ? 0xFF6B6B : 0x8A98A8);
+              - label:
+                  id: lbl_room_bath1
+                  x: 344
+                  y: 44
+                  width: 104
+                  height: 30
+                  text: !lambda |-
+                    return std::string("主卫 ") + id(ha_room_bath1).state;
+                  text_font: font_cn_24
+                  text_color: !lambda |-
+                    return lv_color_hex(id(ha_room_bath1).state == "有人" ? 0xFF6B6B : 0x8A98A8);
+        # 卡片2: 环境/功率
+        - container:
+            x: 8
+            y: 152
+            width: 464
+            height: 88
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            widgets:
+              - label:
+                  id: lbl_t_in
+                  x: 14
+                  y: 10
+                  width: 150
+                  height: 30
+                  text: !lambda |-
+                    if (!id(ha_temp_in).has_state()) return std::string("室内 --");
+                    float v = parse_number<float>(id(ha_temp_in).state).value_or(NAN);
+                    if (!std::isfinite(v)) return std::string("室内 --");
+                    char b[24]; snprintf(b, sizeof(b), "室内 %.1f℃", v); return std::string(b);
+                  text_font: font_cn_24
+                  text_color: 0x52D981
+              - label:
+                  id: lbl_t_bal
+                  x: 168
+                  y: 10
+                  width: 150
+                  height: 30
+                  text: !lambda |-
+                    if (!id(ha_temp_bal).has_state()) return std::string("阳台 --");
+                    float f = parse_number<float>(id(ha_temp_bal).state).value_or(NAN);
+                    if (!std::isfinite(f)) return std::string("阳台 --");
+                    float c = (f - 32) * 5.0f / 9.0f;
+                    char b[24]; snprintf(b, sizeof(b), "阳台 %.1f℃", c); return std::string(b);
+                  text_font: font_cn_24
+                  text_color: 0x52D981
+              - label:
+                  id: lbl_t_diff
+                  x: 322
+                  y: 10
+                  width: 130
+                  height: 30
+                  text: !lambda |-
+                    if (!id(ha_temp_in).has_state() || !id(ha_temp_bal).has_state()) return std::string("温差 --");
+                    float in = parse_number<float>(id(ha_temp_in).state).value_or(NAN);
+                    float bf = parse_number<float>(id(ha_temp_bal).state).value_or(NAN);
+                    if (!std::isfinite(in) || !std::isfinite(bf)) return std::string("温差 --");
+                    float bc = (bf - 32) * 5.0f / 9.0f;
+                    float d = std::fabs(in - bc);
+                    char b[24]; snprintf(b, sizeof(b), "温差 %.1f℃", d); return std::string(b);
+                  text_font: font_cn_24
+                  text_color: 0xFFD166
+              - label:
+                  id: lbl_pc
+                  x: 14
+                  y: 44
+                  width: 150
+                  height: 30
+                  text: !lambda |-
+                    if (!id(ha_pc).has_state()) return std::string("电脑 --");
+                    float v = parse_number<float>(id(ha_pc).state).value_or(NAN);
+                    if (!std::isfinite(v)) return std::string("电脑 --");
+                    char b[24]; snprintf(b, sizeof(b), "电脑 %.0fW", v); return std::string(b);
+                  text_font: font_cn_24
+                  text_color: 0xFFD166
+              - label:
+                  id: lbl_nas
+                  x: 168
+                  y: 44
+                  width: 150
+                  height: 30
+                  text: !lambda |-
+                    if (!id(ha_nas).has_state()) return std::string("NAS --");
+                    float v = parse_number<float>(id(ha_nas).state).value_or(NAN);
+                    if (!std::isfinite(v)) return std::string("NAS --");
+                    char b[24]; snprintf(b, sizeof(b), "NAS %.0fW", v); return std::string(b);
+                  text_font: font_cn_24
+                  text_color: 0x00D4FF
+              - label:
+                  id: lbl_p3d
+                  x: 322
+                  y: 44
+                  width: 130
+                  height: 30
+                  text: !lambda |-
+                    if (!id(ha_p3d).has_state()) return std::string("3D打印 --");
+                    float v = parse_number<float>(id(ha_p3d).state).value_or(NAN);
+                    if (!std::isfinite(v)) return std::string("3D打印 --");
+                    char b[24]; snprintf(b, sizeof(b), "3D打印 %.0fW", v); return std::string(b);
+                  text_font: font_cn_24
+                  text_color: 0xFF9F43
+        # 卡片3(提醒/倒计时)已移除
+        # 卡片: 用电(今年电费/当月用电/上月电费/昨日用电) + HA主机(NAS)状态, HA模板聚合
+        - container:
+            x: 8
+            y: 248
+            width: 464
+            height: 150
+            bg_color: 0x161F3D
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 18
+            widgets:
+              - label:
+                  id: lbl_bill_l1
+                  x: 14
+                  y: 16
+                  width: 436
+                  height: 30
+                  text: !lambda |-
+                    std::string s = id(ha_family_bill).state;
+                    auto pick = [](const std::string& src, int idx) -> std::string {
+                      std::string cur; int n = 0;
+                      for (size_t i = 0; i <= src.size(); i++) {
+                        if (i == src.size() || src[i] == '\n') {
+                          size_t a = 0, b = cur.size();
+                          while (a < b && (cur[a]==' '||cur[a]=='\t')) a++;
+                          while (b > a && (cur[b-1]==' '||cur[b-1]=='\t')) b--;
+                          std::string t = cur.substr(a, b - a);
+                          if (!t.empty()) { if (n == idx) return t; n++; }
+                          cur.clear();
+                        } else cur += src[i];
+                      }
+                      return std::string("");
+                    };
+                    return pick(s, 0);
+                  text_font: font_cn_24
+                  text_color: 0xFFD166
+              - label:
+                  id: lbl_bill_l2
+                  x: 14
+                  y: 54
+                  width: 436
+                  height: 30
+                  text: !lambda |-
+                    std::string s = id(ha_family_bill).state;
+                    auto pick = [](const std::string& src, int idx) -> std::string {
+                      std::string cur; int n = 0;
+                      for (size_t i = 0; i <= src.size(); i++) {
+                        if (i == src.size() || src[i] == '\n') {
+                          size_t a = 0, b = cur.size();
+                          while (a < b && (cur[a]==' '||cur[a]=='\t')) a++;
+                          while (b > a && (cur[b-1]==' '||cur[b-1]=='\t')) b--;
+                          std::string t = cur.substr(a, b - a);
+                          if (!t.empty()) { if (n == idx) return t; n++; }
+                          cur.clear();
+                        } else cur += src[i];
+                      }
+                      return std::string("");
+                    };
+                    return pick(s, 1);
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+              - label:
+                  id: lbl_bill_l3
+                  x: 14
+                  y: 92
+                  width: 436
+                  height: 30
+                  text: !lambda |-
+                    std::string s = id(ha_family_bill).state;
+                    auto pick = [](const std::string& src, int idx) -> std::string {
+                      std::string cur; int n = 0;
+                      for (size_t i = 0; i <= src.size(); i++) {
+                        if (i == src.size() || src[i] == '\n') {
+                          size_t a = 0, b = cur.size();
+                          while (a < b && (cur[a]==' '||cur[a]=='\t')) a++;
+                          while (b > a && (cur[b-1]==' '||cur[b-1]=='\t')) b--;
+                          std::string t = cur.substr(a, b - a);
+                          if (!t.empty()) { if (n == idx) return t; n++; }
+                          cur.clear();
+                        } else cur += src[i];
+                      }
+                      return std::string("");
+                    };
+                    return pick(s, 2);
+                  text_font: font_cn_24
+                  text_color: 0x00D4FF
+        # 底部导航 (6 按钮, 每个 80px)
+        - button:
+            x: 0
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_home
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋜"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "首页"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 80
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_light
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰌵"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "控制"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 160
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_switch
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰔡"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "环境"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 240
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_scene
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰏘"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "场景"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        # 当前页: 家庭 (高亮)
+        - button:
+            id: nav_family_btn
+            x: 320
+            y: 406
+            width: 80
+            height: 72
+            bg_color: 0x00D4FF
+            radius: 22
+            drop_shadow_color: 0x00D4FF
+            drop_shadow_opa: 70%
+            drop_shadow_radius: 10
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋠"
+                  text_font: font_mdi_24
+                  text_color: 0x0B1026
+              - label:
+                  x: 3
+                  y: 24
+                  text: "家庭"
+                  text_font: font_cn_24
+                  text_color: 0x0B1026
+        - button:
+            x: 400
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_set
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰒓"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "设置"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+
+    # ---------------- 第 7 屏: ESP32 Monitor 全家桶状态 (设置页入口) ----------------
+    - id: page_monitor
+      bg_color: 0x0B1026
+      widgets:
+        - button:
+            x: 380
+            y: 400
+            width: 80
+            height: 56
+            bg_color: 0xFFB35C
+            border_width: 0
+            radius: 14
+            on_click:
+              - lvgl.page.show: page_set
+              - lambda: 'id(g_mon_active) = false;'
+            widgets:
+              - label:
+                  x: -15
+                  y: -5
+                  width: 80
+                  text: "返回"
+                  text_font: font_cn_24
+                  text_align: center
+                  text_color: 0xE8EDF2
+        - label:
+            x: 10
+            y: 2
+            text: "·ESP32工作台设备状况概览"
+            text_font: font_cn_24
+            text_color: 0xFF8C00
+        - label:
+            id: lbl_mon_time
+            x: 380
+            y: 2
+            text: !lambda 'return id(my_time).now().strftime("%H:%M");'
+            text_font: font_cn_24
+            text_color: 0x8A98A8
+        # 分隔线
+        - button:
+            x: 0
+            y: 40
+            width: 480
+            height: 1
+            bg_color: 0x1E2D50
+            border_width: 0
+        # 6 行设备(直接显示预格式化文本)
+        - label:
+            id: mon_row1
+            x: 16
+            y: 56
+            width: 450
+            height: 44
+            text: !lambda 'return id(g_mon_row1);'
+            text_font: font_cn_20
+            text_color: 0xE8EDF2
+        - label:
+            id: mon_row2
+            x: 16
+            y: 104
+            width: 450
+            height: 44
+            text: !lambda 'return id(g_mon_row2);'
+            text_font: font_cn_20
+            text_color: 0xE8EDF2
+        - label:
+            id: mon_row3
+            x: 16
+            y: 152
+            width: 450
+            height: 44
+            text: !lambda 'return id(g_mon_row3);'
+            text_font: font_cn_20
+            text_color: 0xE8EDF2
+        - label:
+            id: mon_row4
+            x: 16
+            y: 200
+            width: 450
+            height: 44
+            text: !lambda 'return id(g_mon_row4);'
+            text_font: font_cn_20
+            text_color: 0xE8EDF2
+        - label:
+            id: mon_row5
+            x: 16
+            y: 248
+            width: 450
+            height: 44
+            text: !lambda 'return id(g_mon_row5);'
+            text_font: font_cn_20
+            text_color: 0xE8EDF2
+        - label:
+            id: mon_row6
+            x: 16
+            y: 296
+            width: 450
+            height: 44
+            text: !lambda 'return id(g_mon_row6);'
+            text_font: font_cn_20
+            text_color: 0xE8EDF2
+        - label:
+            x: 16
+            y: 360
+            #"工作台ESP32 monitor"
+            text: "工作台ESP32 monitor"
+            text_font: font_cn_20
+            text_color: 0x2A3A66
+
+    # ---------------- 第 6 屏: 设置 ----------------
+    - id: page_set
+      bg_color: 0x0B1026
+      widgets:
+        # 深色科技风渐变背景 (预渲染抖动图, 无横条)
+        - image:
+            id: bg_set
+            src: bg_grad
+            x: 0
+            y: 0
+            width: 480
+            height: 480
+        - label:
+            x: 0
+            y: 12
+            width: 480
+            height: 40
+            text: "设置"
+            text_font: font_cn_28
+            text_align: center
+        # 背光亮度
+        - label:
+            x: 40
+            y: 64
+            text: "背光亮度"
+            text_font: font_cn_20
+        - slider:
+            id: backlight_slider
+            x: 40
+            y: 98
+            width: 400
+            height: 36
+            min_value: 0
+            max_value: 100
+            value: 100
+            on_value:
+              - lambda: 'id(g_bright_norm) = x / 100.0;'
+              - light.turn_on:
+                  id: backlight
+                  brightness: !lambda 'return x / 100.0;'
+        # 自动熄屏 (0=永不; 闲置到点降背光, 触摸即唤醒)
+        - label:
+            x: 40
+            y: 160
+            text: "自动熄屏"
+            text_font: font_cn_20
+        - button:
+            id: scr_off
+            x: 40
+            y: 196
+            width: 72
+            height: 40
+            bg_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==0 ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: 'id(g_screen_timeout_s)=0;'
+              - text.set:
+                  id: screen_timeout_text
+                  value: "0"
+              - lvgl.widget.refresh: [scr_off, scr_30, scr_1m, scr_3m, scr_5m]
+            widgets:
+              - label:
+                  x: -13
+                  y: -5
+                  width: 72
+                  text: "关闭"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==0 ? 0x9FE8FF : 0x8A98A8);'
+        - button:
+            id: scr_30
+            x: 117
+            y: 196
+            width: 72
+            height: 40
+            bg_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==30 ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: 'id(g_screen_timeout_s)=30;'
+              - text.set:
+                  id: screen_timeout_text
+                  value: "30"
+              - lvgl.widget.refresh: [scr_off, scr_30, scr_1m, scr_3m, scr_5m]
+            widgets:
+              - label:
+                  x: -13
+                  y: -5
+                  width: 72
+                  text: "30秒"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==30 ? 0x9FE8FF : 0x8A98A8);'
+        - button:
+            id: scr_1m
+            x: 194
+            y: 196
+            width: 72
+            height: 40
+            bg_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==60 ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: 'id(g_screen_timeout_s)=60;'
+              - text.set:
+                  id: screen_timeout_text
+                  value: "60"
+              - lvgl.widget.refresh: [scr_off, scr_30, scr_1m, scr_3m, scr_5m]
+            widgets:
+              - label:
+                  x: -13
+                  y: -5
+                  width: 72
+                  text: "1分钟"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==60 ? 0x9FE8FF : 0x8A98A8);'
+        - button:
+            id: scr_3m
+            x: 271
+            y: 196
+            width: 72
+            height: 40
+            bg_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==600 ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: 'id(g_screen_timeout_s)=600;'
+              - text.set:
+                  id: screen_timeout_text
+                  value: "600"
+              - lvgl.widget.refresh: [scr_off, scr_30, scr_1m, scr_3m, scr_5m]
+            widgets:
+              - label:
+                  x: -13
+                  y: -5
+                  width: 72
+                  text: "10分钟"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==600 ? 0x9FE8FF : 0x8A98A8);'
+        - button:
+            id: scr_5m
+            x: 348
+            y: 196
+            width: 72
+            height: 40
+            bg_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==3600 ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: 'id(g_screen_timeout_s)=3600;'
+              - text.set:
+                  id: screen_timeout_text
+                  value: "3600"
+              - lvgl.widget.refresh: [scr_off, scr_30, scr_1m, scr_3m, scr_5m]
+            widgets:
+              - label:
+                  x: -13
+                  y: -5
+                  width: 72
+                  text: "1小时"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_screen_timeout_s)==3600 ? 0x9FE8FF : 0x8A98A8);'
+        # 墨水屏显示内容切换: home=首页六卡 / family=家庭信息三卡
+        - label:
+            x: 40
+            y: 248
+            text: "墨水屏显示"
+            text_font: font_cn_20
+        - button:
+            id: epd_src_home
+            x: 40
+            y: 278
+            width: 150
+            height: 36
+            bg_color: !lambda 'return lv_color_hex(id(g_epd_source)=="home" ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: |-
+                  id(g_epd_source)="home";
+                  id(epd_next_push_at) = (uint32_t) millis();  // 立即到点, 状态机统一推/重连(间隔=0则不推)
+              - lvgl.widget.refresh: [epd_src_home, epd_src_fam]
+            widgets:
+              - label:
+                  x: -13
+                  y: -7
+                  width: 150
+                  text: "首页"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_epd_source)=="home" ? 0x9FE8FF : 0x8A98A8);'
+        - button:
+            id: epd_src_fam
+            x: 205
+            y: 278
+            width: 150
+            height: 36
+            bg_color: !lambda 'return lv_color_hex(id(g_epd_source)=="family" ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: |-
+                  id(g_epd_source)="family";
+                  id(epd_next_push_at) = (uint32_t) millis();  // 立即到点, 状态机统一推/重连(间隔=0则不推)
+              - lvgl.widget.refresh: [epd_src_home, epd_src_fam]
+            widgets:
+              - label:
+                  x: -13
+                  y: -7
+                  width: 150
+                  text: "家庭信息"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_epd_source)=="family" ? 0x9FE8FF : 0x8A98A8);'
+        # 深夜自动模式开关: 23:00-07:00 自动切家庭页+背光30%
+        - label:
+            x: 40
+            y: 330
+            text: "深夜模式"
+            text_font: font_cn_20
+            text_color: 0x8A98A8
+        - button:
+            id: night_toggle
+            x: 130
+            y: 328
+            width: 80
+            height: 32
+            bg_color: !lambda 'return lv_color_hex(id(g_night_mode) ? 0x2E5B8C : 0x161F3D);'
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: 'id(g_night_mode) = !id(g_night_mode);'
+              - lvgl.widget.refresh: [night_toggle]
+            widgets:
+              - label:
+                  x: -15
+                  y: -8
+                  width: 80
+                  text: !lambda 'return std::string(id(g_night_mode) ? "开启" : "关闭");'
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: !lambda 'return lv_color_hex(id(g_night_mode) ? 0x9FE8FF : 0x8A98A8);'
+        - button:
+            x: 220
+            y: 328
+            width: 110
+            height: 32
+            bg_color: 0xFFB35C
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lvgl.page.show: page_monitor
+              - lambda: 'id(g_mon_active) = true;'
+            widgets:
+              - label:
+                  x: -20
+                  y: -10
+                  width: 110
+                  text: "工作台"
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: 0x8A98A8
+        - button:
+            x: 340
+            y: 328
+            width: 110
+            height: 32
+            bg_color: 0xFFB35C
+            border_color: 0x2A3A66
+            border_width: 1
+            radius: 10
+            on_click:
+              - lambda: |-
+                  int t = atoi(id(bg_theme_text).state.c_str());
+                  t = (t + 1) % 3;
+                  char b[4]; snprintf(b, sizeof(b), "%d", t);
+                  id(bg_theme_text).make_call().set_value(b).perform();
+              - lvgl.widget.refresh: [bg_theme_btn]
+            widgets:
+              - label:
+                  id: bg_theme_btn
+                  x: -20
+                  y: -10
+                  width: 110
+                  text: !lambda |-
+                      int t = atoi(id(bg_theme_text).state.c_str());
+                      const char* nm = t==0 ? "深蓝" : t==1 ? "深紫" : "深粉";
+                      char buf[32]; snprintf(buf, sizeof(buf), "背景:%s", nm);
+                      return std::string(buf);
+                  text_font: font_cn_20
+                  text_align: center
+                  text_color: 0x8A98A8
+        # 网络信息 (压成一行)
+        - label:
+            x: 40
+            y: 374
+            text: "网络"
+            text_font: font_cn_20
+            text_color: 0x8A98A8
+        - label:
+            id: lbl_ip
+            x: 92
+            y: 374
+            width: 200
+            height: 28
+            text:
+              format: "%s"
+              args:
+                - 'id(ip_addr).has_state() ? id(ip_addr).state.c_str() : "连接中..."'
+            text_font: font_cn_20
+        - label:
+            id: lbl_signal_set
+            x: 300
+            y: 374
+            width: 150
+            height: 28
+            text:
+              format: "%.0f dBm"
+              args:
+                - 'id(wifi_sig).has_state() ? id(wifi_sig).state : NAN'
+              if_nan: "--"
+            text_font: font_cn_20
+            text_color: 0x8A98A8
+        # 底部导航 (6 按钮, 每个 80px)
+        - button:
+            x: 0
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_home
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋜"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "首页"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 80
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_light
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰌵"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "控制"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 160
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_switch
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰔡"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "环境"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 240
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_scene
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰏘"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "场景"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            x: 320
+            y: 406
+            width: 80
+            height: 72
+            on_click:
+              - lvgl.page.show: page_family
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰋠"
+                  text_font: font_mdi_24
+                  text_color: 0x8A98A8
+              - label:
+                  x: 3
+                  y: 24
+                  text: "家庭"
+                  text_font: font_cn_24
+                  text_color: 0x8A98A8
+        - button:
+            id: nav_set_btn
+            x: 400
+            y: 406
+            width: 80
+            height: 72
+            bg_color: 0x00D4FF
+            radius: 22
+            drop_shadow_color: 0x00D4FF
+            drop_shadow_opa: 70%
+            drop_shadow_radius: 10
+            widgets:
+              - label:
+                  x: 15
+                  y: 1
+                  text: "󰒓"
+                  text_font: font_mdi_24
+                  text_color: 0x0B1026
+              - label:
+                  x: 3
+                  y: 24
+                  text: "设置"
+                  text_font: font_cn_24
+                  text_color: 0x0B1026
