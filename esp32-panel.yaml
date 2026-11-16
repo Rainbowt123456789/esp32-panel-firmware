@@ -251,6 +251,7 @@ time:
               if (is_night == id(g_night_active)) return;
               id(g_night_active) = is_night;
               id(g_bright_norm) = is_night ? 0.3f : 1.0f;
+              id(g_bright_applied) = is_night ? 0.3f : 1.0f;
           - if:
               condition:
                 lambda: 'return id(g_night_active);'
@@ -610,6 +611,11 @@ globals:
     type: float
     restore_value: no
     initial_value: '1.0'
+  # 已实际下发到背光的亮度 (-1=尚未下发), 用于去重: 目标值没变就不重复 turn_on, 避免 light 每秒重算 PWM 造成呼吸渐变
+  - id: g_bright_applied
+    type: float
+    restore_value: no
+    initial_value: '-1.0'
   - id: g_last_touch_ms
     type: uint32_t
     restore_value: no
@@ -1682,17 +1688,18 @@ interval:
           } else if (!id(g_asleep) && idle >= (uint32_t)to * 1000u) {
             id(g_asleep) = true;
           }
+      # 仅当目标亮度相对已下发值发生变化时才写背光; 平时空转不碰 PWM, 避免每秒重复 turn_on 造成呼吸渐变
       - if:
           condition:
-            lambda: 'return id(g_asleep);'
+            lambda: |-
+              float target = id(g_asleep) ? 0.06f : id(g_bright_norm);
+              return fabs(target - id(g_bright_applied)) > 0.005f;
           then:
+            - lambda: |-
+                id(g_bright_applied) = id(g_asleep) ? 0.06f : id(g_bright_norm);
             - light.turn_on:
                 id: backlight
-                brightness: 0.06
-          else:
-            - light.turn_on:
-                id: backlight
-                brightness: !lambda 'return id(g_bright_norm);'
+                brightness: !lambda 'return id(g_asleep) ? 0.06f : id(g_bright_norm);'
   # 问候语自动轮播: ≤22字静止, 超出按每20字切段, 每3秒切下一段循环(避开连续平移重绘卡顿)
   - interval: 3s
     then:
@@ -1744,15 +1751,20 @@ touchscreen:
     id: my_touchscreen
     display: my_display
     update_interval: 30ms
-    # 按下瞬间: 刷新最后触摸时间, 立即唤醒恢复亮度(替代轮询, 点一下就亮)
+    # 按下瞬间刷新最后触摸时间; 仅熄屏唤醒那次才恢复亮度, 醒着的普通触摸(翻页/点按钮)不重写背光
     on_touch:
       then:
-        - lambda: |-
-            id(g_last_touch_ms) = millis();
-            id(g_asleep) = false;
-        - light.turn_on:
-            id: backlight
-            brightness: !lambda 'return id(g_bright_norm);'
+        - lambda: 'id(g_last_touch_ms) = millis();'
+        - if:
+            condition:
+              lambda: 'return id(g_asleep);'
+            then:
+              - lambda: |-
+                  id(g_asleep) = false;
+                  id(g_bright_applied) = id(g_bright_norm);
+              - light.turn_on:
+                  id: backlight
+                  brightness: !lambda 'return id(g_bright_norm);'
 
 # ST7701 4.0" 480x480 RGB 并口屏
 display:
@@ -4690,7 +4702,7 @@ lvgl:
             max_value: 100
             value: 100
             on_value:
-              - lambda: 'id(g_bright_norm) = x / 100.0;'
+              - lambda: 'id(g_bright_norm) = x / 100.0; id(g_bright_applied) = x / 100.0;'
               - light.turn_on:
                   id: backlight
                   brightness: !lambda 'return x / 100.0;'
